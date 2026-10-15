@@ -1,0 +1,22 @@
+# Android
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+*.jks
+*.keystore
+release.keystore
+
+# Gradle
+app/build/
+
+# Web (this repo's build output)
+dist/
+node_modules/
