@@ -1,4 +1,5 @@
 import type { Project, Clip, ExportSettings, AudioEffectInstance } from "./types";
+import { resolveMediaSource } from "./mediaStore";
 
 // In-memory media cache for loaded images and videos
 const imageCache: Map<string, HTMLImageElement> = new Map();
@@ -642,8 +643,21 @@ export async function exportProjectToVideoFile(
     throw new Error("This Android WebView does not support video recording.");
   }
 
+  // Resolve persistent IndexedDB media keys before creating decoders. Project
+  // metadata intentionally stores stable keys, never short-lived blob URLs.
+  const exportProject: Project = {
+    ...project,
+    clips: await Promise.all(project.clips.map(async (clip) => {
+      const source = await resolveMediaSource(clip.src || clip.thumb);
+      const thumb = clip.thumb && clip.thumb === clip.src
+        ? source
+        : await resolveMediaSource(clip.thumb);
+      return { ...clip, src: source, thumb };
+    })),
+  };
+
   // Preload the actual media decoders. Video files are never passed to Image().
-  const preload = project.clips.map(async (clip) => {
+  const preload = exportProject.clips.map(async (clip) => {
     const url = clip.src || clip.thumb;
     if (!url) return;
     if (clip.type === "video" && clip.sourceMimeType?.startsWith("video/")) {
@@ -676,8 +690,8 @@ export async function exportProjectToVideoFile(
     audioContext = previewAudioContext;
     audioDest = audioContext.createMediaStreamDestination();
     const audioSources = [
-      ...project.clips.filter((clip) => clip.type === "audio" && clip.src).map((clip) => getCachedAudio(clip.src as string)),
-      ...project.clips.filter((clip) => clip.type === "video" && clip.sourceMimeType?.startsWith("video/") && clip.src).map((clip) => getCachedVideo(clip.src as string)),
+      ...exportProject.clips.filter((clip) => clip.type === "audio" && clip.src).map((clip) => getCachedAudio(clip.src as string)),
+      ...exportProject.clips.filter((clip) => clip.type === "video" && clip.sourceMimeType?.startsWith("video/") && clip.src).map((clip) => getCachedVideo(clip.src as string)),
     ];
     for (const media of audioSources) {
       const nodes = ensureMediaAudioNodes(media);
@@ -751,7 +765,7 @@ export async function exportProjectToVideoFile(
     for (let frame = 0; frame < totalFrames; frame++) {
       if (isCancelled()) throw new Error("Export cancelled by user.");
       const timeSec = frame / fps;
-      renderCompositeFrame(ctx, targetWidth, targetHeight, project, timeSec, {
+      renderCompositeFrame(ctx, targetWidth, targetHeight, exportProject, timeSec, {
         previewQuality: "full",
         playing: true,
       });
@@ -762,7 +776,7 @@ export async function exportProjectToVideoFile(
       await new Promise((resolve) => window.setTimeout(resolve, 1000 / fps));
     }
 
-    renderCompositeFrame(ctx, targetWidth, targetHeight, project, duration, {
+    renderCompositeFrame(ctx, targetWidth, targetHeight, exportProject, duration, {
       previewQuality: "full",
       playing: false,
     });
