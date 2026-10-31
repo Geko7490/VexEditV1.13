@@ -425,7 +425,16 @@ export default function App() {
             />
           )}
           {overlay === "effects" && (
-            <EffectsScreen tr={tr} presets={presets} savePreset={savePreset} deletePreset={deletePreset} onBack={() => setOverlay(null)} />
+            <EffectsScreen
+              tr={tr}
+              project={activeProject || projects[0] || null}
+              updateClip={updateClip}
+              showToast={showToast}
+              presets={presets}
+              savePreset={savePreset}
+              deletePreset={deletePreset}
+              onBack={() => setOverlay(null)}
+            />
           )}
           {overlay === "modules" && (
             <ModulesScreen
