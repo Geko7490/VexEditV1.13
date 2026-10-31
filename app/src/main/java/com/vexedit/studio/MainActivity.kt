@@ -82,6 +82,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            addJavascriptInterface(AndroidExportBridge(this@MainActivity), "VexEditAndroid")
+
             webChromeClient = object : WebChromeClient() {
                 override fun onShowFileChooser(
                     webView: WebView,
