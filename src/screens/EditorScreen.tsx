@@ -717,6 +717,9 @@ export function EditorScreen(props: {
                                 d.changed = true;
                               }
                               const nextDuration = Math.max(minDuration, initial.duration - applied);
+                              const nextKeyframes = initial.keyframes?.length
+                                ? rebaseKeyframesAfterLeftTrim(initial.keyframes, applied)
+                                : undefined;
                               props.updateClip(project.id, c.id, {
                                 start: Math.max(0, initial.start + applied),
                                 duration: nextDuration,
@@ -724,6 +727,7 @@ export function EditorScreen(props: {
                                   sourceIn: Math.max(0, sourceIn + applied * speed),
                                   sourceOut,
                                 } : {}),
+                                ...(nextKeyframes ? { keyframes: nextKeyframes } : {}),
                               });
                             } else {
                                 const hasSourceBounds = initial.sourceDuration != null || initial.sourceOut != null || initial.sourceIn != null;
@@ -1316,6 +1320,44 @@ function addPresetMedia(props: any, project: Project, m: MediaAsset, at: number)
     rotation: 0,
     crop: 0,
   });
+}
+
+function rebaseKeyframesAfterLeftTrim(
+  keyframes: ClipKeyframe[],
+  removedTimelineSeconds: number
+): ClipKeyframe[] {
+  const originalTime = Math.max(0, removedTimelineSeconds);
+  const properties = ["opacity", "scale", "x", "y", "rotation"] as const;
+  const boundary: ClipKeyframe = { time: 0 };
+
+  for (const property of properties) {
+    const points = keyframes
+      .filter((keyframe) => typeof keyframe[property] === "number")
+      .slice()
+      .sort((left, right) => left.time - right.time);
+    if (points.length === 0) continue;
+
+    let value = points[0][property] as number;
+    if (originalTime >= points[points.length - 1].time) {
+      value = points[points.length - 1][property] as number;
+    } else if (originalTime > points[0].time) {
+      for (let index = 0; index < points.length - 1; index++) {
+        const left = points[index];
+        const right = points[index + 1];
+        if (originalTime >= left.time && originalTime <= right.time) {
+          const ratio = (originalTime - left.time) / Math.max(0.000001, right.time - left.time);
+          value = (left[property] as number) + ((right[property] as number) - (left[property] as number)) * ratio;
+          break;
+        }
+      }
+    }
+    boundary[property] = value;
+  }
+
+  const shifted = keyframes
+    .map((keyframe) => ({ ...keyframe, time: keyframe.time - removedTimelineSeconds }))
+    .filter((keyframe) => keyframe.time > 0);
+  return [boundary, ...shifted].sort((left, right) => left.time - right.time);
 }
 
 function ClipView({
