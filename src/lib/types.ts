@@ -67,6 +67,7 @@ export interface Clip {
   sourceIn?: number; // source-media in point in seconds
   sourceOut?: number; // source-media out point in seconds
   volume: number;
+  pan?: number; // stereo balance for audio clips, -1 left to 1 right
   x: number;
   y: number;
   scale: number;
