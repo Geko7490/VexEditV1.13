@@ -155,16 +155,19 @@ export default function App() {
 
   const addClip = useCallback((projectId: string, clip: Omit<Clip, "id">) => {
     const c: Clip = { ...clip, id: uid("clip") };
+    pushHistory(projectId, "add:before");
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, clips: [...p.clips, c], updatedAt: Date.now(), cover: c.thumb || p.cover } : p)));
     pushHistory(projectId, "add");
   }, [pushHistory]);
 
   const deleteClip = useCallback((projectId: string, clipId: string) => {
+    pushHistory(projectId, "delete:before");
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, clips: p.clips.filter((c) => c.id !== clipId), updatedAt: Date.now() } : p)));
     pushHistory(projectId, "delete");
   }, [pushHistory]);
 
   const duplicateClip = useCallback((projectId: string, clipId: string) => {
+    pushHistory(projectId, "duplicate:before");
     setProjects((prev) =>
       prev.map((p) => {
         if (p.id !== projectId) return p;
@@ -178,6 +181,7 @@ export default function App() {
   }, [pushHistory]);
 
   const splitClip = useCallback((projectId: string, clipId: string, at: number) => {
+    pushHistory(projectId, "split:before");
     setProjects((prev) =>
       prev.map((p) => {
         if (p.id !== projectId) return p;
