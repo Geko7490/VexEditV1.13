@@ -52,7 +52,7 @@ export function EffectsScreen({
     });
     return () => { cancelled = true; };
   }, [selectedClip?.id, selectedClip?.src, selectedClip?.thumb]);
-  const canApply = !["fx.chroma", "fx.glitch"].includes(id);
+  const canApply = true;
 
   const applyEffect = () => {
     if (!project || !selectedClip) {
@@ -83,6 +83,13 @@ export function EffectsScreen({
       case "fx.vignette":
         patch.vignette = Number(params.amount ?? 0);
         patch.vignetteFeather = Number(params.feather ?? 50);
+        break;
+      case "fx.chroma":
+        patch.chromaticAberration = Number(params.amount ?? 0);
+        break;
+      case "fx.glitch":
+        patch.glitchIntensity = Number(params.intensity ?? 0);
+        patch.glitchSpeed = Number(params.speed ?? 1);
         break;
     }
     if (Object.keys(patch).length === 0) return;
@@ -164,7 +171,7 @@ export function EffectsScreen({
             <Primary className="mt-2 w-full" disabled={!selectedClip || !canApply} onClick={applyEffect}>
               Apply effect to clip
             </Primary>
-            {!canApply && <p className="mt-1 text-[10px] text-amber-300">Not yet supported by the render engine.</p>}
+
           </div>
           <div className="mt-2 flex gap-2">
             <Input placeholder="Preset" value={name} onChange={(e: any) => setName(e.target.value)} />
@@ -207,6 +214,14 @@ function previewFilter(id: string, params: Record<string, any>): string {
     case "fx.contrast": return `contrast(${1 + Number(params.value || 0) / 100})`;
     case "fx.saturation": return `saturate(${1 + Number(params.value || 0) / 100})`;
     case "fx.hue": return `hue-rotate(${Number(params.degrees || 0)}deg)`;
+    case "fx.chroma": {
+      const amount = Math.max(0, Math.min(100, Number(params.amount || 0)));
+      return amount > 0 ? `drop-shadow(${amount * 0.06}px 0 rgba(255,40,100,.55)) drop-shadow(-${amount * 0.06}px 0 rgba(0,220,255,.55))` : "none";
+    }
+    case "fx.glitch": {
+      const intensity = Math.max(0, Math.min(100, Number(params.intensity || 0)));
+      return intensity > 0 ? `contrast(${1 + intensity / 160}) saturate(${1 + intensity / 120})` : "none";
+    }
     default: return "none";
   }
 }
