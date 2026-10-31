@@ -10,6 +10,7 @@ export function SettingsScreen({
   updateExport,
   projects,
   modules,
+  backupData,
   showToast,
 }: {
   tr: (k: string) => string;
@@ -19,11 +20,50 @@ export function SettingsScreen({
   updateExport: (p: Partial<ExportSettings>) => void;
   projects: Project[];
   modules: ModuleInfo[];
+  backupData: { settings: SettingsState; projects: Project[]; modules: ModuleInfo[] };
   showToast: (m: string) => void;
 }) {
   const installed = modules.filter((m) => m.status === "installed").reduce((a, m) => a + m.installSize, 0);
   const pv = settings.preview;
   const ex = settings.export;
+
+  const clearTemporaryCache = async () => {
+    try {
+      let removed = 0;
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        const results = await Promise.all(keys.map((key) => caches.delete(key)));
+        removed = results.filter(Boolean).length;
+      }
+      sessionStorage.clear();
+      showToast(`${tr("cacheClear")}: ${removed} cache(s) cleared`);
+    } catch (error) {
+      showToast(`Cache clear failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  };
+
+  const exportBackup = () => {
+    try {
+      const payload = {
+        format: "vexedit-backup",
+        version: 1,
+        createdAt: new Date().toISOString(),
+        ...backupData,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `VexEdit_Backup_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+      showToast(tr("backup") + " ready");
+    } catch (error) {
+      showToast(`Backup failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -128,8 +168,8 @@ export function SettingsScreen({
             </Field>
           </div>
           <div className="mt-3 flex gap-2">
-            <Ghost onClick={() => showToast(tr("cacheClear"))}>{tr("cacheClear")}</Ghost>
-            <Ghost onClick={() => showToast(tr("backup"))}>{tr("backup")}</Ghost>
+            <Ghost onClick={clearTemporaryCache}>{tr("cacheClear")}</Ghost>
+            <Ghost onClick={exportBackup}>{tr("backup")}</Ghost>
           </div>
         </Section>
 
