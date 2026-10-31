@@ -38,38 +38,44 @@ export function getCachedVideo(url: string): HTMLVideoElement {
 
 const audioCache: Map<string, HTMLAudioElement> = new Map();
 let previewAudioContext: AudioContext | null = null;
-const audioNodeCache = new WeakMap<HTMLAudioElement, {
+const audioNodeCache = new WeakMap<HTMLMediaElement, {
   gain: GainNode;
   panner: StereoPannerNode;
 }>();
 
-function configurePreviewAudio(audio: HTMLAudioElement, volume: number, pan: number) {
+function ensureMediaAudioNodes(media: HTMLMediaElement) {
   const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-  if (!AudioContextClass) {
-    audio.volume = Math.max(0, Math.min(1, volume));
-    return;
+  if (!AudioContextClass) return null;
+  previewAudioContext ||= new AudioContextClass();
+  let nodes = audioNodeCache.get(media);
+  if (!nodes) {
+    const source = previewAudioContext.createMediaElementSource(media);
+    const gain = previewAudioContext.createGain();
+    const panner = previewAudioContext.createStereoPanner();
+    source.connect(gain);
+    gain.connect(panner);
+    panner.connect(previewAudioContext.destination);
+    nodes = { gain, panner };
+    audioNodeCache.set(media, nodes);
   }
+  return nodes;
+}
+
+function configurePreviewAudio(media: HTMLMediaElement, volume: number, pan: number) {
   try {
-    previewAudioContext ||= new AudioContextClass();
-    let nodes = audioNodeCache.get(audio);
+    const nodes = ensureMediaAudioNodes(media);
     if (!nodes) {
-      const source = previewAudioContext.createMediaElementSource(audio);
-      const gain = previewAudioContext.createGain();
-      const panner = previewAudioContext.createStereoPanner();
-      source.connect(gain);
-      gain.connect(panner);
-      panner.connect(previewAudioContext.destination);
-      nodes = { gain, panner };
-      audioNodeCache.set(audio, nodes);
+      media.volume = Math.max(0, Math.min(1, volume));
+      return;
     }
     nodes.gain.gain.value = Math.max(0, Math.min(4, volume));
     nodes.panner.pan.value = Math.max(-1, Math.min(1, pan));
-    audio.volume = 1;
-    if (previewAudioContext.state === "suspended") {
+    media.volume = 1;
+    if (previewAudioContext?.state === "suspended") {
       void previewAudioContext.resume().catch(() => undefined);
     }
   } catch {
-    audio.volume = Math.max(0, Math.min(1, volume));
+    media.volume = Math.max(0, Math.min(1, volume));
   }
 }
 
@@ -274,7 +280,7 @@ export function renderCompositeFrame(
               try { video.currentTime = sourceTime; } catch { /* wait for metadata */ }
             }
             video.playbackRate = Math.max(0.25, Math.min(4, clip.speed || 1));
-            video.volume = Math.max(0, Math.min(1, clip.volume ?? 1));
+            configurePreviewAudio(video, (clip.volume ?? 1) * (track?.volume ?? 1), 0);
             if (video.paused && !video.ended) {
               void video.play().catch(() => undefined);
             }
@@ -340,13 +346,58 @@ export function renderCompositeFrame(
 }
 
 // Real Video Export Function producing a real downloadable MP4/WebM file
+function waitForMediaReady(media: HTMLMediaElement, timeoutMs = 12000): Promise<void> {
+  if (media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out while decoding media."));
+    }, timeoutMs);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      media.removeEventListener("loadeddata", onReady);
+      media.removeEventListener("error", onError);
+    };
+    const onReady = () => { cleanup(); resolve(); };
+    const onError = () => {
+      cleanup();
+      reject(new Error("The device could not decode one of the imported media files."));
+    };
+    media.addEventListener("loadeddata", onReady, { once: true });
+    media.addEventListener("error", onError, { once: true });
+    media.load();
+  });
+}
+
+function seekMedia(media: HTMLMediaElement, time: number): Promise<void> {
+  if (Math.abs(media.currentTime - time) < 0.015 && !media.seeking) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out while seeking imported media."));
+    }, 8000);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      media.removeEventListener("seeked", onSeeked);
+      media.removeEventListener("error", onError);
+    };
+    const onSeeked = () => { cleanup(); resolve(); };
+    const onError = () => { cleanup(); reject(new Error("Could not seek in an imported media file.")); };
+    media.addEventListener("seeked", onSeeked, { once: true });
+    media.addEventListener("error", onError, { once: true });
+    try { media.currentTime = Math.max(0, time); } catch (error) {
+      cleanup();
+      reject(error instanceof Error ? error : new Error("Could not seek media."));
+    }
+  });
+}
+
 export async function exportProjectToVideoFile(
   project: Project,
   settings: ExportSettings,
   onProgress: (progress: number, frame: number, totalFrames: number, etaSec: number) => void,
   isCancelled: () => boolean
 ): Promise<{ downloadUrl: string; fileName: string }> {
-  // Determine resolution
   const resMap: Record<string, { w: number; h: number }> = {
     "480p": { w: 854, h: 480 },
     "720p": { w: 1280, h: 720 },
@@ -354,149 +405,139 @@ export async function exportProjectToVideoFile(
     "2K": { w: 2560, h: 1440 },
     "4K": { w: 3840, h: 2160 },
   };
-
   const dim = resMap[settings.resolution] || { w: 1280, h: 720 };
-  // Adjust for aspect ratio
   let targetWidth = dim.w;
   let targetHeight = dim.h;
   if (project.aspect === "9:16") {
     targetWidth = Math.min(dim.w, dim.h);
     targetHeight = Math.max(dim.w, dim.h);
   } else if (project.aspect === "1:1") {
-    const minDim = Math.min(dim.w, dim.h);
-    targetWidth = minDim;
-    targetHeight = minDim;
+    targetWidth = Math.min(dim.w, dim.h);
+    targetHeight = targetWidth;
   }
 
   const fps = settings.fps || 30;
-  const duration = Math.max(
-    3.0,
-    project.clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0)
-  );
-  const totalFrames = Math.round(duration * fps);
-
-  // Create offscreen canvas
+  const duration = Math.max(0.1, project.clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0));
+  const totalFrames = Math.max(1, Math.ceil(duration * fps));
   const canvas = document.createElement("canvas");
   canvas.width = targetWidth;
   canvas.height = targetHeight;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not create the video render canvas.");
+  if (typeof canvas.captureStream !== "function" || typeof MediaRecorder === "undefined") {
+    throw new Error("This Android WebView does not support video recording.");
+  }
 
-  // Create audio context for mixing audio tracks
-  const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+  // Preload the actual media decoders. Video files are never passed to Image().
+  const preload = project.clips.map(async (clip) => {
+    const url = clip.src || clip.thumb;
+    if (!url) return;
+    if (clip.type === "video" && clip.sourceMimeType?.startsWith("video/")) {
+      const video = getCachedVideo(url);
+      await waitForMediaReady(video);
+      await seekMedia(video, clip.sourceIn ?? 0);
+    } else if (clip.type === "audio") {
+      const audio = getCachedAudio(url);
+      await waitForMediaReady(audio);
+      await seekMedia(audio, clip.sourceIn ?? 0);
+    } else {
+      const image = getCachedImage(url);
+      if (!image.complete) {
+        await new Promise<void>((resolve, reject) => {
+          image.onload = () => resolve();
+          image.onerror = () => reject(new Error(`Could not load image: ${clip.name}`));
+        });
+      }
+      if (image.naturalWidth <= 0) throw new Error(`Could not decode image: ${clip.name}`);
+    }
+  });
+  await Promise.all(preload);
+
+  // Route all video and audio element sound into the recorded stream.
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
   let audioContext: AudioContext | null = null;
   let audioDest: MediaStreamAudioDestinationNode | null = null;
-
-  try {
-    if (AudioCtxClass) {
-      audioContext = new AudioCtxClass();
-      audioDest = audioContext.createMediaStreamDestination();
+  if (AudioContextClass) {
+    previewAudioContext ||= new AudioContextClass();
+    audioContext = previewAudioContext;
+    audioDest = audioContext.createMediaStreamDestination();
+    const audioSources = [
+      ...project.clips.filter((clip) => clip.type === "audio" && clip.src).map((clip) => getCachedAudio(clip.src as string)),
+      ...project.clips.filter((clip) => clip.type === "video" && clip.sourceMimeType?.startsWith("video/") && clip.src).map((clip) => getCachedVideo(clip.src as string)),
+    ];
+    for (const media of audioSources) {
+      const nodes = ensureMediaAudioNodes(media);
+      if (nodes) nodes.panner.connect(audioDest);
     }
-  } catch (e) {
-    console.warn("AudioContext init skipped for export", e);
+    if (audioContext.state === "suspended") await audioContext.resume();
   }
 
-  // Preload all media assets used in project
-  const preloadPromises = project.clips.map((clip) => {
-    return new Promise<void>((resolve) => {
-      const url = clip.src || clip.thumb || "/images/preview-car.jpg";
-      const img = getCachedImage(url);
-      if (img.complete) {
-        resolve();
-      } else {
-        img.onload = () => resolve();
-        img.onerror = () => resolve();
-      }
-    });
-  });
-  await Promise.all(preloadPromises);
-
-  // Set up capture stream & MediaRecorder
   const canvasStream = canvas.captureStream(fps);
-  if (audioDest && audioDest.stream.getAudioTracks().length > 0) {
-    audioDest.stream.getAudioTracks().forEach((t) => canvasStream.addTrack(t));
+  if (audioDest) {
+    audioDest.stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
   }
 
-  let mimeType = "video/webm;codecs=vp9";
-  if (MediaRecorder.isTypeSupported("video/mp4;codecs=avc1.42E01E")) {
-    mimeType = "video/mp4;codecs=avc1.42E01E";
-  } else if (MediaRecorder.isTypeSupported("video/mp4")) {
-    mimeType = "video/mp4";
-  } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8")) {
-    mimeType = "video/webm;codecs=vp8";
-  } else if (MediaRecorder.isTypeSupported("video/webm")) {
-    mimeType = "video/webm";
-  }
+  const mimeCandidates = [
+    "video/mp4;codecs=avc1.42E01E",
+    "video/mp4",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+  ];
+  const mimeType = mimeCandidates.find((candidate) => MediaRecorder.isTypeSupported(candidate));
+  if (!mimeType) throw new Error("This device does not support MP4 or WebM video recording.");
 
   const bitrateBps = (settings.bitrate > 0 ? settings.bitrate : 8000) * 1000;
   const mediaRecorder = new MediaRecorder(canvasStream, {
     mimeType,
     videoBitsPerSecond: bitrateBps,
   });
-
   const recordedChunks: Blob[] = [];
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) {
-      recordedChunks.push(e.data);
-    }
+  mediaRecorder.ondataavailable = (event) => {
+    if (event.data && event.data.size > 0) recordedChunks.push(event.data);
   };
-
   const recordingFinishedPromise = new Promise<Blob>((resolve, reject) => {
-    mediaRecorder.onstop = () => {
-      const finalBlob = new Blob(recordedChunks, {
-        type: mimeType.startsWith("video/mp4") ? "video/mp4" : "video/webm",
-      });
-      resolve(finalBlob);
-    };
-    mediaRecorder.onerror = (err) => reject(err);
+    mediaRecorder.onstop = () => resolve(new Blob(recordedChunks, { type: mimeType.startsWith("video/mp4") ? "video/mp4" : "video/webm" }));
+    mediaRecorder.onerror = (event) => reject(event);
   });
 
   mediaRecorder.start(100);
-
-  // Frame by frame rendering loop
   const startTime = performance.now();
-  for (let f = 0; f < totalFrames; f++) {
-    if (isCancelled()) {
-      mediaRecorder.stop();
-      if (audioContext && audioContext.state !== "closed") {
-        audioContext.close();
-      }
-      throw new Error("Render cancelled by user");
+  try {
+    for (let frame = 0; frame < totalFrames; frame++) {
+      if (isCancelled()) throw new Error("Export cancelled by user.");
+      const timeSec = frame / fps;
+      renderCompositeFrame(ctx, targetWidth, targetHeight, project, timeSec, {
+        previewQuality: "full",
+        playing: true,
+      });
+      const progress = ((frame + 1) / totalFrames) * 100;
+      const elapsed = (performance.now() - startTime) / 1000;
+      const measuredFps = frame > 0 ? (frame + 1) / Math.max(0.001, elapsed) : fps;
+      onProgress(progress, frame + 1, totalFrames, (totalFrames - frame - 1) / Math.max(1, measuredFps));
+      await new Promise((resolve) => window.setTimeout(resolve, 1000 / fps));
     }
 
-    const timeSec = f / fps;
-    renderCompositeFrame(ctx, targetWidth, targetHeight, project, timeSec, {
+    renderCompositeFrame(ctx, targetWidth, targetHeight, project, duration, {
       previewQuality: "full",
+      playing: false,
     });
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    mediaRecorder.stop();
+    const finalBlob = await recordingFinishedPromise;
 
-    // Notify progress
-    const progress = (f / totalFrames) * 100;
-    const elapsedSec = (performance.now() - startTime) / 1000;
-    const framesPerSec = f > 0 ? f / elapsedSec : fps;
-    const etaSec = (totalFrames - f) / Math.max(1, framesPerSec);
-
-    onProgress(progress, f, totalFrames, etaSec);
-
-    // Yield execution briefly to let MediaRecorder ingest frames smoothly
-    await new Promise((r) => setTimeout(r, 1000 / fps / 2));
+    const downloadUrl = URL.createObjectURL(finalBlob);
+    const cleanProjectName = (project.name || "VexEdit_Video").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const extension = mimeType.startsWith("video/mp4") ? "mp4" : "webm";
+    const fileName = `${cleanProjectName}_${settings.resolution}_${fps}fps.${extension}`;
+    onProgress(100, totalFrames, totalFrames, 0);
+    return { downloadUrl, fileName };
+  } catch (error) {
+    if (mediaRecorder.state !== "inactive") mediaRecorder.stop();
+    await recordingFinishedPromise.catch(() => undefined);
+    throw error;
+  } finally {
+    videoCache.forEach((video) => video.pause());
+    audioCache.forEach((audio) => audio.pause());
   }
-
-  // Draw final frame and finish recording
-  renderCompositeFrame(ctx, targetWidth, targetHeight, project, duration, { previewQuality: "full" });
-  await new Promise((r) => setTimeout(r, 200));
-
-  mediaRecorder.stop();
-  if (audioContext && audioContext.state !== "closed") {
-    audioContext.close();
-  }
-
-  const finalBlob = await recordingFinishedPromise;
-  const downloadUrl = URL.createObjectURL(finalBlob);
-
-  const cleanProjectName = (project.name || "VexEdit_Video").replace(/[^a-zA-Z0-9_-]/g, "_");
-  const ext = mimeType.startsWith("video/mp4") ? "mp4" : "webm";
-  const fileName = `${cleanProjectName}_${settings.resolution}_${settings.fps}fps.${ext}`;
-
-  onProgress(100, totalFrames, totalFrames, 0);
-
-  return { downloadUrl, fileName };
 }
