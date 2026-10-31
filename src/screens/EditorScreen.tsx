@@ -523,6 +523,7 @@ export function EditorScreen(props: {
                         <ClipView
                           key={c.id}
                           clip={c}
+                          mediaUrl={resolvedMedia[c.id] || c.thumb || c.src || ""}
                           px={px}
                           selected={selected === c.id}
                           height={h - 8}
@@ -1069,6 +1070,7 @@ function addPresetMedia(props: any, project: Project, m: MediaAsset, at: number)
 
 function ClipView({
   clip,
+  mediaUrl,
   px,
   selected,
   height,
@@ -1078,6 +1080,7 @@ function ClipView({
   onDragEnd,
 }: {
   clip: Clip;
+  mediaUrl: string;
   px: number;
   selected: boolean;
   height: number;
@@ -1114,7 +1117,7 @@ function ClipView({
       }}
     >
       {(clip.thumb || clip.src) && clip.type !== "audio" ? (
-        <img src={resolvedMedia[clip.id] || clip.thumb || clip.src} alt="" className="h-full w-full object-cover" draggable={false} />
+        <img src={mediaUrl} alt="" className="h-full w-full object-cover" draggable={false} />
       ) : clip.type === "audio" ? (
         <div className="flex h-full items-end gap-px px-1 py-1">
           {bars.map((b, i) => (
