@@ -12,7 +12,7 @@ export const defaultSettings: SettingsState = {
   perf: "medium",
   theme: "dark",
   onboardingDone: true,
-  storageLocation: "/storage/emulated/0/VexEdit",
+  storageLocation: "Movies/VexEdit",
   catalogUrl: "https://github.com/vexedit/modules/releases/latest/download/manifest.json",
   autoSave: true,
   preview: {
