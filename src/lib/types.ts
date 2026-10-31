@@ -97,6 +97,7 @@ export interface Clip {
   saturation?: number; // -100 to 100
   vignette?: number;   // 0 to 100
   blur?: number;       // 0 to 100
+  hue?: number;        // degrees
 }
 
 export interface Track {
