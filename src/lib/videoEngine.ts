@@ -179,13 +179,18 @@ export function renderCompositeFrame(
   for (const clip of activeAudioClips) {
     const track = project.tracks.find((item) => item.id === clip.track);
     const audio = getCachedAudio(clip.src as string);
-    const sourceTime = Math.max(0, (clip.sourceIn ?? 0) + (timeSec - clip.start) * (clip.speed || 1));
+    const sourceIn = Math.max(0, clip.sourceIn ?? 0);
+    const sourceEnd = clip.sourceOut ?? clip.sourceDuration ?? sourceIn + clip.duration * (clip.speed || 1);
+    const relativeSourceTime = (timeSec - clip.start) * (clip.speed || 1);
+    const sourceTime = clip.reversed
+      ? Math.max(sourceIn, sourceEnd - relativeSourceTime)
+      : sourceIn + (clip.frozen ? 0 : relativeSourceTime);
     if (track?.muted) {
       audio.pause();
       continue;
     }
     if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
-      if (options.playing) {
+      if (options.playing && !clip.frozen && !clip.reversed) {
         if (Math.abs(audio.currentTime - sourceTime) > 0.5 && !audio.seeking) {
           try { audio.currentTime = sourceTime; } catch { /* wait for metadata */ }
         }
@@ -214,7 +219,11 @@ export function renderCompositeFrame(
     if (track?.muted) continue;
 
     const relTime = (timeSec - clip.start) * clip.speed;
-    const sourceTime = Math.max(0, (clip.sourceIn ?? 0) + relTime);
+    const sourceIn = Math.max(0, clip.sourceIn ?? 0);
+    const sourceEnd = clip.sourceOut ?? clip.sourceDuration ?? sourceIn + clip.duration * (clip.speed || 1);
+    const sourceTime = clip.reversed
+      ? Math.max(sourceIn, sourceEnd - relTime)
+      : sourceIn + (clip.frozen ? 0 : relTime);
 
     ctx.save();
 
@@ -278,7 +287,7 @@ export function renderCompositeFrame(
         // Keep the HTML video element as the decoder. Canvas receives decoded
         // frames instead of trying to draw an HTMLImageElement backed by an MP4.
         if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-          if (options.playing) {
+          if (options.playing && !clip.frozen && !clip.reversed) {
             const drift = Math.abs(video.currentTime - sourceTime);
             if (drift > 0.45 && !video.seeking) {
               try { video.currentTime = sourceTime; } catch { /* wait for metadata */ }
