@@ -40,6 +40,9 @@ jobs:
       - name: Verify web editor production build
         run: npm run build
 
+      - name: Type-check web editor
+        run: npx tsc --noEmit
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
