@@ -94,6 +94,30 @@ export function getCachedAudio(url: string): HTMLAudioElement {
   return audio;
 }
 
+type AnimatedProperty = "opacity" | "scale" | "x" | "y" | "rotation";
+
+function getAnimatedValue(clip: Clip, property: AnimatedProperty, time: number, fallback: number): number {
+  const points = (clip.keyframes || [])
+    .filter((keyframe) => typeof keyframe[property] === "number")
+    .sort((a, b) => a.time - b.time);
+  if (points.length === 0) return fallback;
+  if (time <= points[0].time) return points[0][property] as number;
+  if (time >= points[points.length - 1].time) return points[points.length - 1][property] as number;
+
+  for (let index = 0; index < points.length - 1; index++) {
+    const left = points[index];
+    const right = points[index + 1];
+    if (time >= left.time && time <= right.time) {
+      const span = Math.max(0.000001, right.time - left.time);
+      const progress = (time - left.time) / span;
+      const from = left[property] as number;
+      const to = right[property] as number;
+      return from + (to - from) * progress;
+    }
+  }
+  return fallback;
+}
+
 // Convert ColorFilterPreset to CSS filter string
 export function getFilterStyle(clip: Clip): string {
   const parts: string[] = [];
@@ -227,8 +251,16 @@ export function renderCompositeFrame(
 
     ctx.save();
 
+    // Interpolate animated transform values at the clip-local timeline time.
+    const localTime = timeSec - clip.start;
+    const animatedOpacity = getAnimatedValue(clip, "opacity", localTime, clip.opacity ?? 1);
+    const animatedScale = getAnimatedValue(clip, "scale", localTime, clip.scale ?? 1);
+    const animatedX = getAnimatedValue(clip, "x", localTime, clip.x ?? 0);
+    const animatedY = getAnimatedValue(clip, "y", localTime, clip.y ?? 0);
+    const animatedRotation = getAnimatedValue(clip, "rotation", localTime, clip.rotation ?? 0);
+
     // Opacity & Global Alpha
-    let alpha = clip.opacity ?? 1.0;
+    let alpha = animatedOpacity;
 
     // Transition calculations (e.g. fade in/out)
     if (clip.transition === "fade") {
@@ -242,14 +274,14 @@ export function renderCompositeFrame(
     ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
 
     // Transformations
-    const centerX = width / 2 + (clip.x ?? 0) * (width / 100);
-    const centerY = height / 2 + (clip.y ?? 0) * (height / 100);
+    const centerX = width / 2 + animatedX * (width / 100);
+    const centerY = height / 2 + animatedY * (height / 100);
 
     ctx.translate(centerX, centerY);
-    if (clip.rotation) {
-      ctx.rotate((clip.rotation * Math.PI) / 180);
+    if (animatedRotation) {
+      ctx.rotate((animatedRotation * Math.PI) / 180);
     }
-    const scale = clip.scale ?? 1.0;
+    const scale = animatedScale;
     ctx.scale(scale, scale);
 
     if (clip.type === "text") {
