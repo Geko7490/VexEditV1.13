@@ -388,7 +388,10 @@ export function renderCompositeFrame(
 
       // Vignette effect overlay
       if ((clip.vignette ?? 0) > 0) {
-        const radGrad = ctx.createRadialGradient(0, 0, width * 0.25, 0, 0, width * 0.7);
+        const feather = Math.max(0, Math.min(100, clip.vignetteFeather ?? 50)) / 100;
+        const innerRadius = width * (0.05 + feather * 0.4);
+        const outerRadius = width * (0.2 + feather * 1.0);
+        const radGrad = ctx.createRadialGradient(0, 0, innerRadius, 0, 0, outerRadius);
         radGrad.addColorStop(0, "rgba(0,0,0,0)");
         radGrad.addColorStop(1, `rgba(0,0,0,${(clip.vignette! / 100) * 0.85})`);
         ctx.fillStyle = radGrad;
