@@ -456,7 +456,8 @@ export function renderCompositeFrame(
     const transitionScale = clip.transition === "zoom" && relTime < 0.7
       ? 1.18 - 0.18 * zoomProgress
       : 1;
-    const scale = animatedScale * transitionScale;
+    const cropScale = 1 + Math.max(0, Math.min(100, clip.crop ?? 0)) / 100;
+    const scale = animatedScale * transitionScale * cropScale;
     ctx.scale(scale, scale);
 
     if (clip.type === "text") {
