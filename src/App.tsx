@@ -54,7 +54,14 @@ export default function App() {
   const tr = (k: string) => t(lang, k);
 
   useEffect(() => { saveSettings(settings); }, [settings]);
-  useEffect(() => { saveProjects(projects); setSavedFlag(true); }, [projects]);
+  useEffect(() => {
+    setSavedFlag(false);
+    const saveTimer = window.setTimeout(() => {
+      saveProjects(projects);
+      setSavedFlag(true);
+    }, 350);
+    return () => window.clearTimeout(saveTimer);
+  }, [projects]);
   useEffect(() => { savePresets(presets); }, [presets]);
   useEffect(() => { saveChains(chains); }, [chains]);
   useEffect(() => { saveModuleState(modules); }, [modules]);
@@ -419,6 +426,7 @@ export default function App() {
             <EditorScreen
               tr={tr} project={activeProject} settings={settings} saved={savedFlag} renderJobs={renderJobs}
               onBack={() => setOverlay(null)} onUndo={undo} onRedo={redo} pushHistory={pushHistory}
+              showToast={showToast}
               updateProject={updateProject} addClip={addClip} deleteClip={deleteClip}
               duplicateClip={duplicateClip} splitClip={splitClip} updateClip={updateClip}
               startRender={startRender} pauseRender={pauseRender} resumeRender={resumeRender}
