@@ -180,7 +180,11 @@ export function renderCompositeFrame(
           try { audio.currentTime = sourceTime; } catch { /* wait for metadata */ }
         }
         audio.playbackRate = Math.max(0.25, Math.min(4, clip.speed || 1));
-        audio.volume = Math.max(0, Math.min(1, (clip.volume ?? 1) * (track?.volume ?? 1)));
+        configurePreviewAudio(
+          audio,
+          (clip.volume ?? 1) * (track?.volume ?? 1),
+          clip.pan ?? 0
+        );
         if (audio.paused && !audio.ended) void audio.play().catch(() => undefined);
       } else {
         if (!audio.paused) audio.pause();
