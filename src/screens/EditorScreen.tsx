@@ -620,19 +620,38 @@ export function EditorScreen(props: {
               const h = tk.type === "video" ? 58 : tk.type === "audio" ? 44 : 36;
               return (
                 <div key={tk.id} className="relative mb-1 flex items-center" style={{ height: h }}>
-                  <button
-                    onClick={() => {
-                      props.updateProject(project.id, {
-                        tracks: project.tracks.map((t) => (t.id === tk.id ? { ...t, muted: !t.muted } : t)),
-                      });
-                    }}
-                    title={tk.muted ? "Unmute track" : "Mute track"}
-                    className={`sticky left-0 z-20 flex h-full w-10 items-center justify-center bg-[#111114] ${
-                      tk.muted ? "text-rose-400" : "text-zinc-500"
-                    }`}
-                  >
-                    {icon}
-                  </button>
+                  <div className="sticky left-0 z-20 flex h-full w-10 items-center justify-center bg-[#111114]">
+                    <button
+                      onClick={() => {
+                        props.pushHistory(project.id, "track-mute:before");
+                        props.updateProject(project.id, {
+                          tracks: project.tracks.map((track) => (track.id === tk.id ? { ...track, muted: !track.muted } : track)),
+                        });
+                        props.pushHistory(project.id, "track-mute");
+                      }}
+                      title={tk.muted ? "Unmute track" : "Mute track"}
+                      className={`flex h-full w-full items-center justify-center ${
+                        tk.muted ? "text-rose-400" : "text-zinc-500"
+                      }`}
+                    >
+                      {icon}
+                    </button>
+                    <button
+                      onClick={() => {
+                        props.pushHistory(project.id, "track-lock:before");
+                        props.updateProject(project.id, {
+                          tracks: project.tracks.map((track) => (track.id === tk.id ? { ...track, locked: !track.locked } : track)),
+                        });
+                        props.pushHistory(project.id, "track-lock");
+                      }}
+                      title={tk.locked ? "Unlock track" : "Lock track"}
+                      className={`absolute right-0.5 top-0.5 z-30 flex h-4 w-4 items-center justify-center rounded bg-[#27232f] text-[9px] ${
+                        tk.locked ? "text-amber-300" : "text-zinc-600"
+                      }`}
+                    >
+                      {tk.locked ? "L" : "·"}
+                    </button>
+                  </div>
                   <div className="relative h-full flex-1">
                     {project.clips
                       .filter((c) => c.track === tk.id)
@@ -644,6 +663,7 @@ export function EditorScreen(props: {
                           px={px}
                           selected={selected === c.id}
                           height={h - 8}
+                          locked={tk.locked}
                           onSelect={() => setSelected(c.id)}
                           onDragStart={(mode, x) => {
                             dragging.current = {
@@ -1301,6 +1321,7 @@ function addPresetMedia(props: any, project: Project, m: MediaAsset, at: number)
 function ClipView({
   clip,
   mediaUrl,
+  locked = false,
   px,
   selected,
   height,
@@ -1311,6 +1332,7 @@ function ClipView({
 }: {
   clip: Clip;
   mediaUrl: string;
+  locked?: boolean;
   px: number;
   selected: boolean;
   height: number;
@@ -1325,6 +1347,7 @@ function ClipView({
       onPointerDown={(e) => {
         e.stopPropagation();
         onSelect();
+        if (locked) return;
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         const handle = (e.target as HTMLElement).closest<HTMLElement>("[data-trim-edge]");
         const edge = handle?.dataset.trimEdge;
@@ -1336,7 +1359,7 @@ function ClipView({
       }}
       onPointerUp={onDragEnd}
       onPointerCancel={onDragEnd}
-      className={`absolute top-1 overflow-hidden rounded-[10px] ${
+      className={`absolute top-1 overflow-hidden rounded-[10px] ${locked ? "cursor-not-allowed opacity-75" : ""} ${
         selected ? "ring-[2.5px] ring-violet-400" : "ring-1 ring-black/40"
       }`}
       style={{
