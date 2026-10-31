@@ -144,7 +144,10 @@ class MainActivity : ComponentActivity() {
                 if (current?.canGoBack() == true) {
                     current.goBack()
                 } else {
-                    finish()
+                    current?.evaluateJavascript(
+                        "window.dispatchEvent(new Event('vexedit:android-back'))",
+                        null
+                    )
                 }
             }
         })
