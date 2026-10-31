@@ -195,9 +195,24 @@ export default function App() {
         const c = p.clips.find((x) => x.id === clipId);
         if (!c) return p;
         const rel = at - c.start;
-        if (rel <= 0.15 || rel >= c.duration - 0.15) return p;
-        const a: Clip = { ...c, duration: rel };
-        const b: Clip = { ...c, id: uid("clip"), start: c.start + rel, duration: c.duration - rel };
+        const frame = 1 / Math.max(1, p.fps || 30);
+        if (rel < frame || rel > c.duration - frame) return p;
+        const sourceIn = c.sourceIn ?? 0;
+        const sourceOut = c.sourceOut ?? c.sourceDuration ?? sourceIn + c.duration * (c.speed || 1);
+        const sourceSplit = Math.min(sourceOut, sourceIn + rel * (c.speed || 1));
+        const hasSourceBounds = c.sourceDuration != null || c.sourceOut != null || c.sourceIn != null;
+        const a: Clip = {
+          ...c,
+          duration: rel,
+          ...(hasSourceBounds ? { sourceIn, sourceOut: sourceSplit } : {}),
+        };
+        const b: Clip = {
+          ...c,
+          id: uid("clip"),
+          start: c.start + rel,
+          duration: c.duration - rel,
+          ...(hasSourceBounds ? { sourceIn: sourceSplit, sourceOut } : {}),
+        };
         return { ...p, clips: p.clips.filter((x) => x.id !== clipId).concat(a, b), updatedAt: Date.now() };
       })
     );
