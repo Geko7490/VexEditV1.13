@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   loadSettings, saveSettings, loadProjects, saveProjects, loadPresets, savePresets,
   loadChains, saveChains, loadModuleState, saveModuleState, uid,
@@ -6,7 +6,7 @@ import {
 import { t } from "./lib/i18n";
 import type {
   SettingsState, Project, ModuleInfo, Preset, AudioChain, Clip,
-  RenderJob, PreviewSettings, ExportSettings, MediaAsset,
+  PreviewSettings, ExportSettings, MediaAsset,
 } from "./lib/types";
 import { MODULE_CATALOG } from "./lib/mock";
 import { TRACKS } from "./lib/demo";
@@ -49,11 +49,9 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [onboardingStep, setOnboardingStep] = useState(0);
-  const [renderJobs, setRenderJobs] = useState<RenderJob[]>([]);
   const [online, setOnline] = useState(navigator.onLine);
   const [savedFlag, setSavedFlag] = useState(true);
   const [clock, setClock] = useState(() => new Date());
-  const renderTimers = useRef<Record<string, any>>({});
 
   const lang = settings.lang;
   const tr = (k: string) => t(lang, k);
@@ -266,67 +264,6 @@ export default function App() {
   }, [showToast, tr]);
   const deletePreset = useCallback((id: string) => setPresets((prev) => prev.filter((p) => p.id !== id)), []);
 
-  const startRender = useCallback((projectId: string) => {
-    const p = projects.find((x) => x.id === projectId);
-    if (!p) return;
-    const exp = settings.export;
-    const resMap: Record<string, string> = { "480p": "854x480", "720p": "1280x720", "1080p": "1920x1080", "2K": "2560x1440", "4K": "3840x2160" };
-    const dur = Math.max(5, p.clips.reduce((a, c) => Math.max(a, c.start + c.duration), 0));
-    const totalFrames = Math.round(exp.fps * dur);
-    const job: RenderJob = {
-      id: uid("render"),
-      projectId,
-      status: "PREPARING",
-      progress: 0,
-      eta: totalFrames / (exp.fps * 0.6),
-      speed: 0,
-      frame: 0,
-      totalFrames,
-      resolution: resMap[exp.resolution],
-      fps: exp.fps,
-      codec: exp.codec === "auto" ? "h264 (hw)" : exp.codec,
-      createdAt: Date.now(),
-    };
-    setRenderJobs((prev) => [job, ...prev]);
-    setTimeout(() => setRenderJobs((prev) => prev.map((j) => (j.id === job.id ? { ...j, status: "RENDERING" } : j))), 500);
-    let frame = 0;
-    const timer = setInterval(() => {
-      setRenderJobs((prev) => {
-        const j = prev.find((x) => x.id === job.id);
-        if (!j || j.status !== "RENDERING") return prev;
-        frame += Math.max(1, Math.floor(exp.fps / 3));
-        if (frame >= totalFrames) {
-          clearInterval(timer);
-          delete renderTimers.current[job.id];
-          return prev.map((x) => (x.id === job.id ? { ...x, frame: totalFrames, progress: 100, status: "FINALIZING", eta: 0, speed: exp.fps } : x));
-        }
-        return prev.map((x) => (x.id === job.id ? { ...x, frame, progress: (frame / totalFrames) * 100, eta: (totalFrames - frame) / (exp.fps * 0.8), speed: exp.fps * 0.8 } : x));
-      });
-    }, 280);
-    renderTimers.current[job.id] = timer;
-    setTimeout(() => {
-      setRenderJobs((prev) => prev.map((j) => (j.id === job.id && (j.status === "FINALIZING" || j.status === "RENDERING") ? { ...j, status: "COMPLETED", outputPath: `/exports/${projectId}.mp4`, progress: 100 } : j)));
-    }, Math.min(14000, 1800 + totalFrames * 8));
-  }, [projects, settings.export]);
-
-  const pauseRender = useCallback((id: string) => {
-    const tm = renderTimers.current[id];
-    if (tm) { clearInterval(tm); delete renderTimers.current[id]; }
-    setRenderJobs((prev) => prev.map((j) => (j.id === id && j.status === "RENDERING" ? { ...j, status: "PAUSED", pausedAt: Date.now() } : j)));
-  }, []);
-  const resumeRender = useCallback((id: string) => {
-    setRenderJobs((prev) => prev.map((j) => (j.id === id && j.status === "PAUSED" ? { ...j, status: "RENDERING" } : j)));
-  }, []);
-  const cancelRender = useCallback((id: string) => {
-    const tm = renderTimers.current[id];
-    if (tm) { clearInterval(tm); delete renderTimers.current[id]; }
-    setRenderJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "CANCELLED" } : j)));
-  }, []);
-  const retryRender = useCallback((id: string) => {
-    const j = renderJobs.find((x) => x.id === id);
-    if (j) startRender(j.projectId);
-  }, [renderJobs, startRender]);
-
   const updatePreview = (patch: Partial<PreviewSettings>) => setSettings((s) => ({ ...s, preview: { ...s.preview, ...patch } }));
   const updateExport = (patch: Partial<ExportSettings>) => setSettings((s) => ({ ...s, export: { ...s.export, ...patch } }));
 
@@ -417,13 +354,11 @@ export default function App() {
 
           {overlay === "editor" && activeProject && (
             <EditorScreen
-              tr={tr} project={activeProject} settings={settings} saved={savedFlag} renderJobs={renderJobs}
+              tr={tr} project={activeProject} settings={settings} saved={savedFlag}
               onBack={() => setOverlay(null)} onUndo={undo} onRedo={redo} pushHistory={pushHistory}
               showToast={showToast}
               updateProject={updateProject} addClip={addClip} deleteClip={deleteClip}
               duplicateClip={duplicateClip} splitClip={splitClip} updateClip={updateClip}
-              startRender={startRender} pauseRender={pauseRender} resumeRender={resumeRender}
-              cancelRender={cancelRender} retryRender={retryRender}
               updatePreview={updatePreview} updateExport={updateExport}
             />
           )}
