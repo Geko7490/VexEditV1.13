@@ -29,7 +29,7 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>(() => loadProjects());
   const [presets, setPresets] = useState<Preset[]>(() => loadPresets());
   const [chains, setChains] = useState<AudioChain[]>(() => loadChains());
-  const [modules, setModules] = useState<ModuleInfo[]>(() =>
+  const [modules] = useState<ModuleInfo[]>(() =>
     // Previous versions simulated module downloads. Reset those fake states;
     // the real SDK-backed module installer is intentionally deferred.
     MODULE_CATALOG.map((module) => ({
