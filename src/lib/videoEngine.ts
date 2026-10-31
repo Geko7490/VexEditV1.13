@@ -134,6 +134,9 @@ export function getFilterStyle(clip: Clip): string {
   if ((clip.blur ?? 0) > 0) {
     parts.push(`blur(${clip.blur! * 0.15}px)`);
   }
+  if ((clip.hue ?? 0) !== 0) {
+    parts.push(`hue-rotate(${clip.hue}deg)`);
+  }
 
   // Preset LUTs
   switch (clip.filterPreset) {
