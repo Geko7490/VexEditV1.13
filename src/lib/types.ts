@@ -105,6 +105,9 @@ export interface Clip {
   vignetteFeather?: number;
   blur?: number;       // 0 to 100
   hue?: number;        // degrees
+  chromaticAberration?: number; // 0 to 100
+  glitchIntensity?: number; // 0 to 100
+  glitchSpeed?: number; // 0.1 to 5
 }
 
 export interface Track {
