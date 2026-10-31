@@ -33,6 +33,11 @@ class AndroidExportBridge(private val activity: Activity) {
     fun isAvailable(): Boolean = true
 
     @JavascriptInterface
+    fun finishApp() {
+        activity.runOnUiThread { activity.finish() }
+    }
+
+    @JavascriptInterface
     fun beginSave(fileName: String, mimeType: String, expectedBytes: Long): String {
         return try {
             val safeName = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "VexEdit_Export.webm" }
