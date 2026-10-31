@@ -803,7 +803,7 @@ export function EditorScreen(props: {
                 }}
               />
               <div className="mt-2 flex gap-2">
-                <Ghost onClick={() => props.updateClip(project.id, sel.id, { reversed: !sel.reversed })}>
+                <Ghost disabled={sel.type !== "video"} onClick={() => props.updateClip(project.id, sel.id, { reversed: !sel.reversed })}>
                   {tr("reverse")} {sel.reversed ? "✓" : ""}
                 </Ghost>
                 <Ghost onClick={() => props.updateClip(project.id, sel.id, { frozen: !sel.frozen })}>
