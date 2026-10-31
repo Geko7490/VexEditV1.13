@@ -58,6 +58,7 @@ export function EditorScreen(props: {
   const [advanced, setAdvanced] = useState(false);
   const [activeExportJob, setActiveExportJob] = useState<RenderJob | null>(null);
   const [resolvedMedia, setResolvedMedia] = useState<Record<string, string>>({});
+  const [previewFrameVersion, setPreviewFrameVersion] = useState(0);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -73,6 +74,12 @@ export function EditorScreen(props: {
   useEffect(() => {
     setSelected(project.clips.find((c) => c.track === 2)?.id ?? null);
   }, [project.id]);
+
+  useEffect(() => {
+    const refreshPreview = () => setPreviewFrameVersion((version) => version + 1);
+    window.addEventListener("vexedit:media-frame", refreshPreview);
+    return () => window.removeEventListener("vexedit:media-frame", refreshPreview);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,7 +142,7 @@ export function EditorScreen(props: {
       previewQuality: settings.preview.effectQuality,
       playing,
     });
-  }, [project, tNow, selected, settings.preview.effectQuality, playing, resolvedMedia]);
+  }, [project, tNow, selected, settings.preview.effectQuality, playing, resolvedMedia, previewFrameVersion]);
 
   // Real Playhead Loop
   useEffect(() => {
