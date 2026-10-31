@@ -326,7 +326,7 @@ export default function App() {
       return;
     }
     addClip(pid, {
-      track: asset.type === "audio" ? 3 : 2,
+      track: asset.type === "audio" ? 3 : 1,
       type: asset.type === "audio" ? "audio" : "video",
       name: asset.name,
       start: 0,
