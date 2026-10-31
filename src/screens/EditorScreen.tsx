@@ -579,6 +579,9 @@ export function EditorScreen(props: {
                             }
                           }}
                           onDragEnd={() => {
+                            if (dragging.current?.id === c.id) {
+                              props.pushHistory(project.id, dragging.current.mode === "move" ? "move" : "trim");
+                            }
                             dragging.current = null;
                           }}
                         />
