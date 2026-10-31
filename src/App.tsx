@@ -331,23 +331,35 @@ export default function App() {
   };
 
   const useAsset = (asset: MediaAsset) => {
-    if (!activeProjectId) {
-      if (projects[0]) setActiveProjectId(projects[0].id);
-    }
     const pid = activeProjectId || projects[0]?.id;
     if (!pid) {
       createProject();
+      showToast("Project created. Add the asset again to place it on the timeline.");
       return;
     }
+
+    // The bundled media library currently contains still-image previews, not
+    // actual video/audio source files. Never create a silent fake audio clip.
+    if (asset.type === "audio" && !asset.src) {
+      showToast("This library audio item is a preview only. Import a real audio file to use it.");
+      return;
+    }
+
+    const clipType: Clip["type"] = asset.src ? asset.type : "image";
     addClip(pid, {
-      track: asset.type === "audio" ? 3 : 1,
-      type: asset.type === "audio" ? "audio" : "video",
+      track: clipType === "audio" ? 3 : 2,
+      type: clipType,
       name: asset.name,
       start: 0,
       duration: asset.duration,
-      color: asset.type === "audio" ? "#3ee0c8" : "#8b67f7",
+      sourceDuration: asset.src && (clipType === "video" || clipType === "audio") ? asset.duration : undefined,
+      sourceIn: 0,
+      sourceOut: asset.src && (clipType === "video" || clipType === "audio") ? asset.duration : undefined,
+      color: clipType === "audio" ? "#3ee0c8" : "#8b67f7",
       opacity: 1, speed: 1, reversed: false, frozen: false, effects: [],
-      thumb: asset.thumb, volume: 1, x: 0, y: 0, scale: 1, rotation: 0, crop: 0,
+      src: asset.src,
+      thumb: asset.thumb,
+      volume: 1, x: 0, y: 0, scale: 1, rotation: 0, crop: 0,
     });
     setOverlay("editor");
     setActiveProjectId(pid);
