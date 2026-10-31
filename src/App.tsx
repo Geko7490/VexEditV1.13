@@ -432,7 +432,7 @@ export default function App() {
               tr={tr} settings={settings} setSettings={setSettings}
               updatePreview={updatePreview} updateExport={updateExport}
               projects={projects} modules={modules}
-              backupData={{ settings, projects, modules }}
+              backupData={{ settings, projects, modules, presets, chains }}
               showToast={showToast}
             />
           )}
