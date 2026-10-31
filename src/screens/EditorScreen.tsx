@@ -961,8 +961,10 @@ export function EditorScreen(props: {
                 {(
                   [
                     ["none", "None"],
-                    ["fade", "Cross Fade"],
-                    ["wipe", "Wipe Transition"],
+                    ["fade", "Fade"],
+                    ["dissolve", "Dissolve"],
+                    ["wipe", "Wipe"],
+                    ["zoom", "Zoom"],
                   ] as [TransitionType, string][]
                 ).map(([tKey, tLabel]) => (
                   <button
@@ -1041,9 +1043,18 @@ export function EditorScreen(props: {
           )}
 
           {tool === "crop" && (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="mb-1 text-xs text-zinc-400">{tr("rotation")}</div>
+                <div className="mb-1 flex justify-between text-xs text-zinc-400"><span>Crop / Zoom</span><span>{sel.crop ?? 0}%</span></div>
+                <Slider
+                  value={sel.crop ?? 0}
+                  min={0}
+                  max={60}
+                  onChange={(v: number) => props.updateClip(project.id, sel.id, { crop: v })}
+                />
+              </div>
+              <div>
+                <div className="mb-1 flex justify-between text-xs text-zinc-400"><span>{tr("rotation")}</span><span>{sel.rotation}°</span></div>
                 <Slider
                   value={sel.rotation + 180}
                   min={0}
@@ -1058,6 +1069,15 @@ export function EditorScreen(props: {
                   min={0}
                   max={100}
                   onChange={(v: number) => props.updateClip(project.id, sel.id, { x: v - 50 })}
+                />
+              </div>
+              <div>
+                <div className="mb-1 text-xs text-zinc-400">Y Position</div>
+                <Slider
+                  value={sel.y + 50}
+                  min={0}
+                  max={100}
+                  onChange={(v: number) => props.updateClip(project.id, sel.id, { y: v - 50 })}
                 />
               </div>
             </div>
