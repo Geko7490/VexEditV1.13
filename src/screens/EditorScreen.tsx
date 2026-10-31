@@ -682,7 +682,7 @@ export function EditorScreen(props: {
                               (initial.sourceDuration != null ? initial.sourceDuration : sourceIn + initial.duration * speed);
 
                             if (d.mode === "left") {
-                              const hasSourceBounds = initial.sourceDuration != null || initial.sourceOut != null || initial.sourceIn != null;
+                              const hasSourceBounds = initial.type !== "image" && (initial.sourceDuration != null || initial.sourceOut != null || initial.sourceIn != null);
                               const minDelta = hasSourceBounds
                                 ? -Math.min(initial.start, sourceIn / speed)
                                 : -initial.start;
@@ -704,7 +704,7 @@ export function EditorScreen(props: {
                               });
                             } else {
                                 const hasSourceBounds = initial.sourceDuration != null || initial.sourceOut != null || initial.sourceIn != null;
-                              const sourceEndLimit = initial.sourceDuration ?? sourceOut;
+                              const sourceEndLimit = initial.sourceDuration ?? initial.sourceOut ?? sourceIn + initial.duration * speed;
                               const maxDuration = hasSourceBounds
                                 ? Math.max(minDuration, (sourceEndLimit - sourceIn) / speed)
                                 : 600;
