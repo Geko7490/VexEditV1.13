@@ -13,7 +13,7 @@ import type {
 } from "../lib/types";
 import { formatClock, uid } from "../lib/store";
 import { MEDIA_LIBRARY, waveBars } from "../lib/demo";
-import { renderCompositeFrame, exportProjectToVideoFile } from "../lib/videoEngine";
+import { renderCompositeFrame, exportProjectToVideoFile, resumePreviewAudio } from "../lib/videoEngine";
 import { resolveMediaSource, saveMediaFile } from "../lib/mediaStore";
 import * as Ic from "../components/icons";
 import { Sheet, Slider, Select, Field, Primary, Ghost, Progress, Input } from "../components/ui";
@@ -515,7 +515,10 @@ export function EditorScreen(props: {
                   <Ic.IcSkipBack size={18} />
                 </button>
                 <button
-                  onClick={() => setPlaying((p) => !p)}
+                  onClick={() => {
+                    if (!playing) void resumePreviewAudio().catch(() => undefined);
+                    setPlaying((p) => !p);
+                  }}
                   className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white transition active:scale-95"
                 >
                   {playing ? <Ic.IcPause size={18} /> : <Ic.IcPlay size={18} />}
