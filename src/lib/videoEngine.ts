@@ -437,6 +437,8 @@ export function renderCompositeFrame(
       } else if (relTime > clip.duration - fadeDur) {
         alpha *= ((clip.duration - relTime) / fadeDur);
       }
+    } else if (clip.transition === "dissolve" && relTime < 0.7) {
+      alpha *= Math.max(0, Math.min(1, relTime / 0.7));
     }
     ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
 
@@ -448,7 +450,13 @@ export function renderCompositeFrame(
     if (animatedRotation) {
       ctx.rotate((animatedRotation * Math.PI) / 180);
     }
-    const scale = animatedScale;
+    const zoomProgress = clip.transition === "zoom"
+      ? Math.max(0, Math.min(1, relTime / 0.7))
+      : 1;
+    const transitionScale = clip.transition === "zoom" && relTime < 0.7
+      ? 1.18 - 0.18 * zoomProgress
+      : 1;
+    const scale = animatedScale * transitionScale;
     ctx.scale(scale, scale);
 
     if (clip.type === "text") {
