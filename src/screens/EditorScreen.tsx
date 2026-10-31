@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import type {
   Clip,
+  ClipKeyframe,
   Project,
   RenderJob,
   SettingsState,
@@ -104,6 +105,51 @@ export function EditorScreen(props: {
   const duration = Math.max(15, ...project.clips.map((c) => c.start + c.duration), 1);
   const px = 38 * zoom;
   const sel = project.clips.find((c) => c.id === selected) || null;
+  const localKeyframeTime = sel ? Math.max(0, Math.min(sel.duration, tNow - sel.start)) : 0;
+  const keyframeTolerance = 0.5 / Math.max(1, project.fps);
+  const currentKeyframe = sel?.keyframes?.find(
+    (keyframe) => Math.abs(keyframe.time - localKeyframeTime) <= keyframeTolerance
+  ) ?? null;
+
+  const updateAnimatedProperty = (property: "opacity" | "scale" | "x" | "y" | "rotation", value: number) => {
+    if (!sel) return;
+    const patch: Partial<Clip> = { [property]: value };
+    if (currentKeyframe) {
+      patch.keyframes = (sel.keyframes || []).map((keyframe) =>
+        Math.abs(keyframe.time - currentKeyframe.time) <= keyframeTolerance
+          ? { ...keyframe, [property]: value }
+          : keyframe
+      );
+    }
+    props.updateClip(project.id, sel.id, patch);
+  };
+
+  const addOrUpdateKeyframe = () => {
+    if (!sel) return;
+    const nextKeyframe: ClipKeyframe = {
+      time: localKeyframeTime,
+      opacity: sel.opacity,
+      scale: sel.scale,
+      x: sel.x,
+      y: sel.y,
+      rotation: sel.rotation,
+    };
+    const keyframes = (sel.keyframes || []).filter(
+      (keyframe) => Math.abs(keyframe.time - localKeyframeTime) > keyframeTolerance
+    );
+    keyframes.push(nextKeyframe);
+    keyframes.sort((a, b) => a.time - b.time);
+    props.updateClip(project.id, sel.id, { keyframes });
+  };
+
+  const deleteCurrentKeyframe = () => {
+    if (!sel || !currentKeyframe) return;
+    props.updateClip(project.id, sel.id, {
+      keyframes: (sel.keyframes || []).filter(
+        (keyframe) => Math.abs(keyframe.time - currentKeyframe.time) > keyframeTolerance
+      ),
+    });
+  };
 
   // Real Canvas-based Preview Renderer
   useEffect(() => {
@@ -875,22 +921,62 @@ export function EditorScreen(props: {
           )}
 
           {tool === "animation" && (
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <div className="mb-1 text-xs text-zinc-400">{tr("opacity")}</div>
-                <Slider
-                  value={sel.opacity * 100}
-                  onChange={(v: number) => props.updateClip(project.id, sel.id, { opacity: v / 100 })}
-                />
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Ghost onClick={addOrUpdateKeyframe}>
+                  {currentKeyframe ? "Update Keyframe" : "Add Keyframe"}
+                </Ghost>
+                <Ghost danger disabled={!currentKeyframe} onClick={deleteCurrentKeyframe}>
+                  Delete
+                </Ghost>
+                <span className="text-[10px] text-zinc-500">
+                  {(sel.keyframes || []).length} keyframes · {localKeyframeTime.toFixed(2)}s
+                </span>
               </div>
-              <div>
-                <div className="mb-1 text-xs text-zinc-400">{tr("scale")}</div>
-                <Slider
-                  value={sel.scale * 100}
-                  min={10}
-                  max={250}
-                  onChange={(v: number) => props.updateClip(project.id, sel.id, { scale: v / 100 })}
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="mb-1 text-xs text-zinc-400">{tr("opacity")}</div>
+                  <Slider
+                    value={sel.opacity * 100}
+                    onChange={(v: number) => updateAnimatedProperty("opacity", v / 100)}
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs text-zinc-400">{tr("scale")}</div>
+                  <Slider
+                    value={sel.scale * 100}
+                    min={10}
+                    max={250}
+                    onChange={(v: number) => updateAnimatedProperty("scale", v / 100)}
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs text-zinc-400">X Position</div>
+                  <Slider
+                    value={sel.x + 50}
+                    min={0}
+                    max={100}
+                    onChange={(v: number) => updateAnimatedProperty("x", v - 50)}
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs text-zinc-400">Y Position</div>
+                  <Slider
+                    value={sel.y + 50}
+                    min={0}
+                    max={100}
+                    onChange={(v: number) => updateAnimatedProperty("y", v - 50)}
+                  />
+                </div>
+                <div className="col-span-2">
+                  <div className="mb-1 text-xs text-zinc-400">Rotation</div>
+                  <Slider
+                    value={sel.rotation + 180}
+                    min={0}
+                    max={360}
+                    onChange={(v: number) => updateAnimatedProperty("rotation", v - 180)}
+                  />
+                </div>
               </div>
             </div>
           )}
