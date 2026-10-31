@@ -50,7 +50,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val assetLoader = WebViewAssetLoader.Builder()
-            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
 
         val webView = WebView(this).apply {
@@ -122,7 +122,7 @@ class MainActivity : ComponentActivity() {
             }
 
             // The complete React/Vite build is packaged with the APK.
-            loadUrl("https://appassets.androidplatform.net/assets/web/index.html")
+            loadUrl("https://appassets.androidplatform.net/index.html")
         }
 
         editorWebView = webView
