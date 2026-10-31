@@ -2,31 +2,17 @@ import { useState } from "react";
 import type { ModuleInfo } from "../lib/types";
 import { formatBytes } from "../lib/store";
 import * as Ic from "../components/icons";
-import { Progress, Ghost, Primary } from "../components/ui";
+import { Ghost } from "../components/ui";
 
 export function ModulesScreen({
   tr,
   modules,
   online,
-  installModule,
-  pauseModule,
-  resumeModule,
-  cancelModule,
-  retryModule,
-  removeModule,
-  updateModule,
   onBack,
 }: {
   tr: (k: string) => string;
   modules: ModuleInfo[];
   online: boolean;
-  installModule: (id: string) => void;
-  pauseModule: (id: string) => void;
-  resumeModule: (id: string) => void;
-  cancelModule: (id: string) => void;
-  retryModule: (id: string) => void;
-  removeModule: (id: string) => void;
-  updateModule: (id: string) => void;
   onBack: () => void;
 }) {
   const [filter, setFilter] = useState("all");
@@ -88,50 +74,10 @@ export function ModulesScreen({
                   {tr("deps")}: {m.dependencies.join(", ")}
                 </div>
               )}
-              {(m.status === "downloading" || m.status === "paused") && (
-                <div className="mt-2">
-                  <Progress value={m.progress} />
-                  <div className="mt-1 flex justify-between text-[10px] text-zinc-500">
-                    <span>
-                      {m.progress.toFixed(0)}% · {formatBytes(m.downloadedBytes)}/{formatBytes(m.totalBytes)}
-                    </span>
-                    <span>
-                      {formatBytes(m.speed)}/s · {m.eta.toFixed(0)}s
-                    </span>
-                  </div>
-                </div>
-              )}
-              <div className="mt-3 flex flex-wrap gap-2">
-                {m.status === "not_installed" && (
-                  <Ghost disabled className="!py-2 !text-xs">
-                    Available after core editor
-                  </Ghost>
-                )}
-                {m.status === "downloading" && (
-                  <>
-                    <Ghost onClick={() => pauseModule(m.id)}>{tr("pause")}</Ghost>
-                    <Ghost danger onClick={() => cancelModule(m.id)}>
-                      {tr("cancel")}
-                    </Ghost>
-                  </>
-                )}
-                {m.status === "paused" && (
-                  <>
-                    <Ghost onClick={() => resumeModule(m.id)}>{tr("resume")}</Ghost>
-                    <Ghost danger onClick={() => cancelModule(m.id)}>
-                      {tr("cancel")}
-                    </Ghost>
-                  </>
-                )}
-                {m.status === "error" && <Ghost onClick={() => retryModule(m.id)}>{tr("retry")}</Ghost>}
-                {m.status === "installed" && (
-                  <>
-                    <Ghost onClick={() => updateModule(m.id)}>{tr("update")}</Ghost>
-                    <Ghost danger onClick={() => removeModule(m.id)}>
-                      {tr("remove")}
-                    </Ghost>
-                  </>
-                )}
+              <div className="mt-3">
+                <Ghost disabled className="!py-2 !text-xs">
+                  Available after core editor
+                </Ghost>
               </div>
             </article>
           ))}
