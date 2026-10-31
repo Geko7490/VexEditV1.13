@@ -16,17 +16,19 @@ export function getCachedImage(url: string): HTMLImageElement {
 }
 
 export function getCachedVideo(url: string): HTMLVideoElement {
-  if (videoCache.has(url)) {
-    return videoCache.get(url)!;
-  }
-  const vid = document.createElement("video");
-  vid.crossOrigin = "anonymous";
-  vid.src = url;
-  vid.muted = true;
-  vid.playsInline = true;
-  vid.preload = "auto";
-  videoCache.set(url, vid);
-  return vid;
+  const cached = videoCache.get(url);
+  if (cached) return cached;
+
+  const video = document.createElement("video");
+  video.crossOrigin = "anonymous";
+  video.src = url;
+  video.muted = false;
+  video.volume = 1;
+  video.playsInline = true;
+  video.preload = "auto";
+  video.setAttribute("playsinline", "");
+  videoCache.set(url, video);
+  return video;
 }
 
 // Convert ColorFilterPreset to CSS filter string
@@ -78,10 +80,11 @@ export function renderCompositeFrame(
   height: number,
   project: Project,
   timeSec: number,
-  _options: {
+  options: {
     selectedClipId?: string | null;
     showGrid?: boolean;
     previewQuality?: "fast" | "balanced" | "full";
+    playing?: boolean;
   } = {}
 ) {
   // Clear canvas background
@@ -103,6 +106,7 @@ export function renderCompositeFrame(
     if (track?.muted) continue;
 
     const relTime = (timeSec - clip.start) * clip.speed;
+    const sourceTime = Math.max(0, (clip.sourceIn ?? 0) + relTime);
 
     ctx.save();
 
@@ -154,7 +158,31 @@ export function renderCompositeFrame(
     } else {
       // Draw Image / Video Clip
       const imgUrl = clip.src || clip.thumb || "/images/preview-car.jpg";
-      const img = getCachedImage(imgUrl);
+      const isVideo = clip.type === "video";
+      const video = isVideo ? getCachedVideo(imgUrl) : null;
+      const img = isVideo ? null : getCachedImage(imgUrl);
+
+      if (video) {
+        // Keep the HTML video element as the decoder. Canvas receives decoded
+        // frames instead of trying to draw an HTMLImageElement backed by an MP4.
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+          if (options.playing) {
+            const drift = Math.abs(video.currentTime - sourceTime);
+            if (drift > 0.45 && !video.seeking) {
+              try { video.currentTime = sourceTime; } catch { /* wait for metadata */ }
+            }
+            video.volume = Math.max(0, Math.min(1, clip.volume ?? 1));
+            if (video.paused && !video.ended) {
+              void video.play().catch(() => undefined);
+            }
+          } else {
+            if (!video.paused) video.pause();
+            if (!video.seeking && Math.abs(video.currentTime - sourceTime) > 0.025) {
+              try { video.currentTime = sourceTime; } catch { /* media may still be loading */ }
+            }
+          }
+        }
+      }
 
       // Apply Filter
       const filterStr = getFilterStyle(clip);
@@ -175,16 +203,21 @@ export function renderCompositeFrame(
         ctx.clip();
       }
 
-      if (img.complete && img.naturalWidth > 0) {
-        ctx.drawImage(img, drawX, drawY, drawW, drawH);
+      const mediaReady = video
+        ? video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0
+        : !!img && img.complete && img.naturalWidth > 0;
+      if (mediaReady) {
+        ctx.drawImage((video || img) as CanvasImageSource, drawX, drawY, drawW, drawH);
       } else {
-        // Fallback procedural visual
+        // Keep the preview informative while the decoder loads or when the
+        // device cannot decode the selected source.
         ctx.fillStyle = clip.color || "#8b67f7";
         ctx.fillRect(drawX, drawY, drawW, drawH);
         ctx.fillStyle = "#ffffff";
         ctx.font = `${Math.round(height * 0.05)}px sans-serif`;
         ctx.textAlign = "center";
-        ctx.fillText(clip.name, 0, 0);
+        const status = video?.error ? "Unsupported video format" : "Loading media…";
+        ctx.fillText(status, 0, 0);
       }
 
       // Vignette effect overlay
