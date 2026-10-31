@@ -66,7 +66,7 @@ export function EffectsScreen({
     const patch: Partial<Clip> = {};
     switch (id) {
       case "fx.blur":
-        patch.blur = Number(params.radius ?? params.amount ?? 0);
+        patch.blur = Math.max(0, Math.min(100, Number(params.amount ?? 0) * (Number(params.radius ?? 4) / 4)));
         break;
       case "fx.brightness":
         patch.brightness = Number(params.value ?? 0);
@@ -82,6 +82,7 @@ export function EffectsScreen({
         break;
       case "fx.vignette":
         patch.vignette = Number(params.amount ?? 0);
+        patch.vignetteFeather = Number(params.feather ?? 50);
         break;
     }
     if (Object.keys(patch).length === 0) return;
@@ -201,7 +202,7 @@ export function EffectsScreen({
 
 function previewFilter(id: string, params: Record<string, any>): string {
   switch (id) {
-    case "fx.blur": return `blur(${Number(params.radius || 0)}px)`;
+    case "fx.blur": return `blur(${Math.max(0, Math.min(100, Number(params.amount || 0) * (Number(params.radius || 4) / 4))) * 0.15}px)`;
     case "fx.brightness": return `brightness(${1 + Number(params.value || 0) / 100})`;
     case "fx.contrast": return `contrast(${1 + Number(params.value || 0) / 100})`;
     case "fx.saturation": return `saturate(${1 + Number(params.value || 0) / 100})`;
