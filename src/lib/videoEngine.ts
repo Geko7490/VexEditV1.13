@@ -119,12 +119,33 @@ export function createAudioEffectNodes(
         break;
       }
       case "afx.delay": {
+        const input = context.createGain();
+        const output = context.createGain();
+        const dry = context.createGain();
+        const wet = context.createGain();
         const delay = context.createDelay(2);
+        const feedback = context.createGain();
         delay.delayTime.value = Math.max(0.001, Math.min(2, Number(params.time ?? 250) / 1000));
-        nodes.push(delay);
+        feedback.gain.value = Math.max(0, Math.min(0.95, Number(params.feedback ?? 30) / 100));
+        const mix = Math.max(0, Math.min(1, Number(params.mix ?? 25) / 100));
+        dry.gain.value = 1 - mix;
+        wet.gain.value = mix;
+        input.connect(dry);
+        dry.connect(output);
+        input.connect(delay);
+        delay.connect(feedback);
+        feedback.connect(delay);
+        delay.connect(wet);
+        wet.connect(output);
+        (input as any).__ownedNodes = [output, dry, wet, delay, feedback];
+        nodes.push(input, output);
         break;
       }
       case "afx.reverb": {
+        const input = context.createGain();
+        const output = context.createGain();
+        const dry = context.createGain();
+        const wet = context.createGain();
         const convolver = context.createConvolver();
         const decay = Math.max(0.1, Math.min(10, Number(params.decay ?? 2)));
         const length = Math.max(1, Math.floor(context.sampleRate * decay));
@@ -137,7 +158,16 @@ export function createAudioEffectNodes(
           }
         }
         convolver.buffer = impulse;
-        nodes.push(convolver);
+        const mix = Math.max(0, Math.min(1, Number(params.mix ?? 20) / 100));
+        dry.gain.value = 1 - mix;
+        wet.gain.value = mix;
+        input.connect(dry);
+        dry.connect(output);
+        input.connect(convolver);
+        convolver.connect(wet);
+        wet.connect(output);
+        (input as any).__ownedNodes = [output, dry, wet, convolver];
+        nodes.push(input, output);
         break;
       }
     }
@@ -163,7 +193,11 @@ function ensureMediaAudioNodes(media: HTMLMediaElement, effects: AudioEffectInst
   const signature = JSON.stringify(effects);
   if (nodes.effectsSignature !== signature) {
     nodes.gain.disconnect();
-    nodes.effectNodes.forEach((node) => node.disconnect());
+    nodes.effectNodes.forEach((node) => {
+      node.disconnect();
+      const owned = (node as any).__ownedNodes as AudioNode[] | undefined;
+      owned?.forEach((ownedNode) => ownedNode.disconnect());
+    });
     const nextNodes = createAudioEffectNodes(previewAudioContext, effects);
     let previous: AudioNode = nodes.gain;
     for (const node of nextNodes) {
