@@ -43,6 +43,9 @@ export function ModulesScreen({
         </button>
         <h1 className="text-[17px] font-semibold">{tr("moduleCenter")}</h1>
       </header>
+      <div className="mx-4 mb-3 rounded-xl bg-violet-500/10 px-3 py-2 text-[11px] leading-relaxed text-violet-200">
+        {tr("moduleCenter")} is planned for the final development phase. Downloads are disabled until real module packages, integrity checks, and dependency installation are available.
+      </div>
       {!online && (
         <div className="mx-4 mb-2 flex items-center gap-2 rounded-xl bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
           <Ic.IcWifiOff /> {tr("offline")} — {tr("noInternetNeeded")}
@@ -100,9 +103,9 @@ export function ModulesScreen({
               )}
               <div className="mt-3 flex flex-wrap gap-2">
                 {m.status === "not_installed" && (
-                  <Primary onClick={() => installModule(m.id)} className="!py-2 !text-xs">
-                    {tr("download")}
-                  </Primary>
+                  <Ghost disabled className="!py-2 !text-xs">
+                    Available after core editor
+                  </Ghost>
                 )}
                 {m.status === "downloading" && (
                   <>
