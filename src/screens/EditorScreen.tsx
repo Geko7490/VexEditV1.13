@@ -562,10 +562,11 @@ export function EditorScreen(props: {
                                 sourceOut,
                               });
                             } else {
-                              const sourceEndLimit = initial.sourceDuration ?? sourceOut;
-                              const maxDuration = initial.sourceDuration != null
-                                ? Math.max(1 / Math.max(1, project.fps), (sourceEndLimit - sourceIn) / speed)
-                                : 600;
+                                const sourceEndLimit = initial.sourceDuration ?? sourceOut;
+                              const maxDuration = Math.max(
+                                1 / Math.max(1, project.fps),
+                                (sourceEndLimit - sourceIn) / speed
+                              );
                               const nextDuration = Math.max(
                                 1 / Math.max(1, project.fps),
                                 Math.min(maxDuration, initial.duration + delta)
@@ -1117,7 +1118,11 @@ function ClipView({
       }}
     >
       {(clip.thumb || clip.src) && clip.type !== "audio" ? (
-        <img src={mediaUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+        clip.type === "video" && clip.sourceMimeType?.startsWith("video/") ? (
+          <video src={mediaUrl} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+        ) : (
+          <img src={mediaUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+        )
       ) : clip.type === "audio" ? (
         <div className="flex h-full items-end gap-px px-1 py-1">
           {bars.map((b, i) => (
