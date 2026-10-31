@@ -49,6 +49,7 @@ export function EditorScreen(props: {
   const [tNow, setTNow] = useState(12.0);
   const [zoom, setZoom] = useState(1.05);
   const [snap, setSnap] = useState(true);
+  const [ripple, setRipple] = useState(false);
   const [selected, setSelected] = useState<string | null>(project.clips.find((c) => c.track === 2)?.id ?? null);
   const [tool, setTool] = useState<Tool>("edit");
   const [addOpen, setAddOpen] = useState(false);
@@ -68,6 +69,7 @@ export function EditorScreen(props: {
     mode: "move" | "left" | "right";
     startX: number;
     initial: Clip;
+    clips: Clip[];
   } | null>(null);
   const cancelExportRef = useRef(false);
 
@@ -462,6 +464,9 @@ export function EditorScreen(props: {
         <button onClick={() => setSnap((s) => !s)} className={`flex items-center gap-1 px-2 py-2 ${snap ? "text-violet-300" : ""}`}>
           <Ic.IcSnap size={18} /> {tr("snap")}
         </button>
+        <button onClick={() => setRipple((value) => !value)} className={`flex items-center gap-1 px-2 py-2 ${ripple ? "text-violet-300" : "text-zinc-500"}`}>
+          <Ic.IcLayers size={16} /> Ripple
+        </button>
         <div className="ml-auto flex items-center gap-1 text-zinc-400">
           <button onClick={() => setZoom((z) => Math.max(0.5, z - 0.15))} className="p-2">
             <Ic.IcZoomOut size={18} />
@@ -537,7 +542,7 @@ export function EditorScreen(props: {
                           onSelect={() => setSelected(c.id)}
                           onDragStart={(mode, x) => {
                             props.pushHistory(project.id, mode === "move" ? "move" : "trim");
-                            dragging.current = { id: c.id, mode, startX: x, initial: { ...c } };
+                            dragging.current = { id: c.id, mode, startX: x, initial: { ...c }, clips: project.clips.map((clip) => ({ ...clip })) };
                           }}
                           onDrag={(x) => {
                             const d = dragging.current;
@@ -578,11 +583,31 @@ export function EditorScreen(props: {
                                 1 / Math.max(1, project.fps),
                                 Math.min(maxDuration, initial.duration + delta)
                               );
-                              props.updateClip(project.id, c.id, {
+                              const nextSourceOut = Math.min(
+                                sourceIn + nextDuration * speed,
+                                initial.sourceDuration ?? Number.POSITIVE_INFINITY
+                              );
+                              const clipPatch = {
                                 duration: nextDuration,
                                 sourceIn,
-                                sourceOut: Math.min(sourceIn + nextDuration * speed, initial.sourceDuration ?? Number.POSITIVE_INFINITY),
-                              });
+                                sourceOut: nextSourceOut,
+                              };
+                              const mainVideoTrack = project.tracks.find((track) => track.type === "video")?.id ?? 2;
+                              const timelineDelta = nextDuration - initial.duration;
+
+                              if (ripple && initial.track === mainVideoTrack) {
+                                const originalEnd = initial.start + initial.duration;
+                                const nextClips = d.clips.map((other) => {
+                                  if (other.id === initial.id) return { ...other, ...clipPatch };
+                                  if (other.track === mainVideoTrack && other.start >= originalEnd - 0.001) {
+                                    return { ...other, start: Math.max(0, other.start + timelineDelta) };
+                                  }
+                                  return other;
+                                });
+                                props.updateProject(project.id, { clips: nextClips });
+                              } else {
+                                props.updateClip(project.id, c.id, clipPatch);
+                              }
                             }
                           }}
                           onDragEnd={() => {
