@@ -65,6 +65,15 @@ function ensureMediaAudioNodes(media: HTMLMediaElement) {
   return nodes;
 }
 
+export async function resumePreviewAudio(): Promise<void> {
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioContextClass) return;
+  previewAudioContext ||= new AudioContextClass();
+  if (previewAudioContext.state === "suspended") {
+    await previewAudioContext.resume();
+  }
+}
+
 function configurePreviewAudio(media: HTMLMediaElement, volume: number, pan: number) {
   try {
     const nodes = ensureMediaAudioNodes(media);
