@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   loadSettings, saveSettings, loadProjects, saveProjects, loadPresets, savePresets,
-  loadChains, saveChains, loadModuleState, saveModuleState, uid,
+  loadChains, saveChains, saveModuleState, uid,
 } from "./lib/store";
 import { t } from "./lib/i18n";
 import type {
@@ -227,37 +227,6 @@ export default function App() {
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, clips: p.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)), updatedAt: Date.now() } : p)));
   }, []);
 
-  const installModule = useCallback((_id: string) => {
-    showToast(lang === "tr"
-      ? "Modül sistemi, temel editör tamamlandıktan sonra eklenecek."
-      : "The module system will be added after the core editor is complete.");
-  }, [lang, showToast]);
-
-  const pauseModule = useCallback((id: string) => {
-    const tm = moduleTimers.current[id];
-    if (tm) { clearInterval(tm); delete moduleTimers.current[id]; }
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "paused", speed: 0 } : m)));
-  }, []);
-  const resumeModule = useCallback((id: string) => {
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "downloading" } : m)));
-  }, []);
-  const cancelModule = useCallback((id: string) => {
-    const tm = moduleTimers.current[id];
-    if (tm) { clearInterval(tm); delete moduleTimers.current[id]; }
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "not_installed", progress: 0, downloadedBytes: 0, speed: 0, eta: 0 } : m)));
-  }, []);
-  const retryModule = useCallback((id: string) => {
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "downloading", error: undefined } : m)));
-  }, []);
-  const removeModule = useCallback((id: string) => {
-    const tm = moduleTimers.current[id];
-    if (tm) { clearInterval(tm); delete moduleTimers.current[id]; }
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "not_installed", progress: 0, downloadedBytes: 0, speed: 0, eta: 0, installedAt: undefined } : m)));
-  }, []);
-  const updateModule = useCallback((id: string) => {
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "downloading", progress: 0, downloadedBytes: 0 } : m)));
-  }, []);
-
   const savePreset = useCallback((effectId: string, name: string, params: Record<string, any>) => {
     setPresets((prev) => [{ id: uid("preset"), name, effectId, params, createdAt: Date.now() }, ...prev]);
     showToast(tr("savePreset"));
@@ -387,8 +356,6 @@ export default function App() {
           {overlay === "modules" && (
             <ModulesScreen
               tr={tr} modules={modules} online={online}
-              installModule={installModule} pauseModule={pauseModule} resumeModule={resumeModule}
-              cancelModule={cancelModule} retryModule={retryModule} removeModule={removeModule} updateModule={updateModule}
               onBack={() => setOverlay(null)}
             />
           )}
