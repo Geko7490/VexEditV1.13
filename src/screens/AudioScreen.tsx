@@ -40,7 +40,7 @@ export function AudioScreen({
 
   useEffect(() => {
     const volume = Math.max(0.001, selectedClip?.volume ?? 1);
-    setGain(Math.max(-24, Math.min(24, 20 * Math.log10(volume))));
+    setGain(Math.max(-24, Math.min(12, 20 * Math.log10(volume))));
     setPan(Math.round((selectedClip?.pan ?? 0) * 50));
   }, [selectedClipId, selectedClip?.volume, selectedClip?.pan]);
   const chain = chains.find((c) => c.id === selected);
@@ -75,9 +75,9 @@ export function AudioScreen({
         for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
       }
       if (peak <= 0.000001) throw new Error("The selected audio is silent.");
-      const normalizedVolume = Math.min(2, 0.95 / peak);
+      const normalizedVolume = Math.min(4, 0.95 / peak);
       updateClip(project.id, selectedClip.id, { volume: normalizedVolume });
-      showToast("Audio normalized to -0.45 dB peak.");
+      showToast("Audio gain normalized within the available headroom.");
     } catch (error) {
       showToast(error instanceof Error ? error.message : "Audio normalization failed.");
     } finally {
@@ -176,7 +176,7 @@ export function AudioScreen({
                 <span>{tr("gain")}</span>
                 <span>{gain} dB</span>
               </div>
-              <Slider value={gain + 24} min={0} max={48} onChange={(v: number) => {
+              <Slider value={gain + 24} min={0} max={36} onChange={(v: number) => {
                   const nextGain = v - 24;
                   setGain(nextGain);
                   if (project && selectedClip) updateClip(project.id, selectedClip.id, { volume: Math.pow(10, nextGain / 20) });
@@ -195,8 +195,8 @@ export function AudioScreen({
             </div>
           </div>
           <div className="mt-3 flex gap-2">
-            <Ghost disabled={!selectedClip} onClick={normalizeSelectedAudio}>{tr("normalize")}</Ghost>
-            <Ghost disabled={!selectedClip} onClick={exportSelectedAudio}>{tr("exportAudio")}</Ghost>
+            <Ghost disabled={!selectedClip?.src} onClick={normalizeSelectedAudio}>{tr("normalize")}</Ghost>
+            <Ghost disabled={!selectedClip?.src} onClick={exportSelectedAudio}>{tr("exportAudio")}</Ghost>
           </div>
         </div>
 
