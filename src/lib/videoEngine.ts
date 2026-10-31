@@ -10,6 +10,9 @@ export function getCachedImage(url: string): HTMLImageElement {
   }
   const img = new Image();
   img.crossOrigin = "anonymous";
+  img.addEventListener("load", () => {
+    if (typeof window !== "undefined") window.dispatchEvent(new Event("vexedit:media-frame"));
+  }, { once: true });
   img.src = url;
   imageCache.set(url, img);
   return img;
@@ -27,11 +30,12 @@ export function getCachedVideo(url: string): HTMLVideoElement {
   video.playsInline = true;
   video.preload = "auto";
   video.setAttribute("playsinline", "");
-  video.addEventListener("seeked", () => {
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new Event("vexedit:media-frame"));
-    }
-  });
+  const notifyFrameReady = () => {
+    if (typeof window !== "undefined") window.dispatchEvent(new Event("vexedit:media-frame"));
+  };
+  video.addEventListener("loadeddata", notifyFrameReady, { once: true });
+  video.addEventListener("seeked", notifyFrameReady);
+  video.addEventListener("error", notifyFrameReady, { once: true });
   videoCache.set(url, video);
   return video;
 }
