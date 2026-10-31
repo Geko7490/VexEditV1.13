@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AudioChain, Clip, Project } from "../lib/types";
 import { resolveMediaSource } from "../lib/mediaStore";
+import { createAudioEffectNodes } from "../lib/videoEngine";
 import { AUDIO_EFFECTS } from "../lib/mock";
 import { waveBars } from "../lib/demo";
 import * as Ic from "../components/icons";
@@ -45,6 +46,30 @@ export function AudioScreen({
   }, [selectedClipId, selectedClip?.volume, selectedClip?.pan]);
   const chain = chains.find((c) => c.id === selected);
   const bars = waveBars("studio-wave", 120);
+
+  useEffect(() => {
+    if (!chains.some((item) => item.id === selected)) setSelected(chains[0]?.id ?? null);
+  }, [chains, selected]);
+
+  const applyChainToClip = () => {
+    if (!project || !selectedClip?.src || !chain) {
+      showToast("Select an imported audio clip and an effect chain first.");
+      return;
+    }
+    updateClip(project.id, selectedClip.id, {
+      audioEffects: chain.effects.map((effect) => ({
+        id: effect.id,
+        params: { ...effect.params },
+      })),
+    });
+    showToast(`Applied ${chain.name} to ${selectedClip.name}`);
+  };
+
+  const deleteChain = () => {
+    if (!chain) return;
+    setChains((previous: AudioChain[]) => previous.filter((item) => item.id !== chain.id));
+    setSelected(chains.find((item) => item.id !== chain.id)?.id ?? null);
+  };
 
   const addEffect = (eid: string) => {
     if (!chain) return;
@@ -100,10 +125,11 @@ export function AudioScreen({
       decodeContext = new AudioContextClass();
       const buffer = await decodeContext.decodeAudioData(await response.arrayBuffer());
       const sourceIn = Math.max(0, selectedClip.sourceIn ?? 0);
-      const speed = Math.max(0.25, Math.min(4, selectedClip.speed || 1));
+      const speed = Math.max(0.1, Math.min(3, selectedClip.speed || 1));
+      const sourceEnd = Math.min(buffer.duration, selectedClip.sourceOut ?? buffer.duration);
       const timelineDuration = Math.min(
         selectedClip.duration,
-        Math.max(0, (buffer.duration - sourceIn) / speed)
+        Math.max(0, (sourceEnd - sourceIn) / speed)
       );
       if (timelineDuration <= 0) throw new Error("The selected clip has no exportable audio range.");
 
@@ -121,6 +147,13 @@ export function AudioScreen({
       panner.pan.value = Math.max(-1, Math.min(1, selectedClip.pan ?? 0));
       node.connect(gainNode);
       gainNode.connect(panner);
+      let previousNode: AudioNode = gainNode;
+      const effectNodes = createAudioEffectNodes(offline, selectedClip.audioEffects ?? []);
+      for (const effectNode of effectNodes) {
+        previousNode.connect(effectNode);
+        previousNode = effectNode;
+      }
+      previousNode.connect(panner);
       panner.connect(offline.destination);
       node.start(0, sourceIn, Math.min(buffer.duration - sourceIn, timelineDuration * speed));
 
@@ -205,18 +238,37 @@ export function AudioScreen({
             <h3 className="font-semibold">{tr("chainBuilder")}</h3>
             <Ghost
               onClick={() => {
-                const c = { id: "chain_" + Math.random().toString(36).slice(2, 8), name: "Chain", effects: [] };
-                setChains((prev: AudioChain[]) => [c, ...prev]);
-                setSelected(c.id);
+                const created = { id: "chain_" + Math.random().toString(36).slice(2, 8), name: `Chain ${chains.length + 1}`, effects: [] };
+                setChains((prev: AudioChain[]) => [created, ...prev]);
+                setSelected(created.id);
               }}
             >
-              +
+              + New
             </Ghost>
           </div>
+          <div className="mb-3 flex gap-2">
+            <select
+              value={selected ?? ""}
+              onChange={(event) => setSelected(event.target.value || null)}
+              className="min-w-0 flex-1 rounded-xl bg-[#121216] px-3 py-2 text-sm text-white outline-none"
+            >
+              <option value="">No chain</option>
+              {chains.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+            <Ghost danger disabled={!chain} onClick={deleteChain}>Delete</Ghost>
+          </div>
+          <Primary className="mb-3 w-full" disabled={!chain || !selectedClip?.src} onClick={applyChainToClip}>
+            Apply chain to selected audio clip
+          </Primary>
           <div className="mb-3 flex flex-wrap gap-1.5">
-            {AUDIO_EFFECTS.map((e) => (
-              <button key={e.id} onClick={() => addEffect(e.id)} className="rounded-full bg-white/8 px-2.5 py-1 text-[11px]">
-                {e.name}
+            {AUDIO_EFFECTS.map((effect) => (
+              <button
+                key={effect.id}
+                disabled={!chain}
+                onClick={() => addEffect(effect.id)}
+                className="rounded-full bg-white/8 px-2.5 py-1 text-[11px] disabled:opacity-35"
+              >
+                {effect.name}
               </button>
             ))}
           </div>
