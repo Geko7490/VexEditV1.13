@@ -68,6 +68,7 @@ export function EditorScreen(props: {
     startX: number;
     initial: Clip;
     clips: Clip[];
+    changed: boolean;
   } | null>(null);
   const cancelExportRef = useRef(false);
 
@@ -642,8 +643,14 @@ export function EditorScreen(props: {
                           height={h - 8}
                           onSelect={() => setSelected(c.id)}
                           onDragStart={(mode, x) => {
-                            props.pushHistory(project.id, mode === "move" ? "move" : "trim");
-                            dragging.current = { id: c.id, mode, startX: x, initial: { ...c }, clips: project.clips.map((clip) => ({ ...clip })) };
+                            dragging.current = {
+                              id: c.id,
+                              mode,
+                              startX: x,
+                              initial: { ...c },
+                              clips: project.clips.map((clip) => ({ ...clip })),
+                              changed: false,
+                            };
                           }}
                           onDrag={(x) => {
                             const d = dragging.current;
@@ -655,6 +662,11 @@ export function EditorScreen(props: {
                             if (d.mode === "move") {
                               let nextStart = Math.max(0, initial.start + delta);
                               if (snap) nextStart = Math.round(nextStart * project.fps) / project.fps;
+                              if (Math.abs(nextStart - initial.start) < 0.0001) return;
+                              if (!d.changed) {
+                                props.pushHistory(project.id, "move");
+                                d.changed = true;
+                              }
                               props.updateClip(project.id, c.id, { start: nextStart });
                               return;
                             }
@@ -667,6 +679,11 @@ export function EditorScreen(props: {
                               const minDelta = -Math.min(initial.start, sourceIn / speed);
                               const maxDelta = Math.max(0, initial.duration - 1 / Math.max(1, project.fps));
                               const applied = Math.max(minDelta, Math.min(maxDelta, delta));
+                              if (Math.abs(applied) < 0.0001) return;
+                              if (!d.changed) {
+                                props.pushHistory(project.id, "trim");
+                                d.changed = true;
+                              }
                               const nextDuration = Math.max(1 / Math.max(1, project.fps), initial.duration - applied);
                               props.updateClip(project.id, c.id, {
                                 start: Math.max(0, initial.start + applied),
@@ -684,6 +701,11 @@ export function EditorScreen(props: {
                                 1 / Math.max(1, project.fps),
                                 Math.min(maxDuration, initial.duration + delta)
                               );
+                              if (Math.abs(nextDuration - initial.duration) < 0.0001) return;
+                              if (!d.changed) {
+                                props.pushHistory(project.id, "trim");
+                                d.changed = true;
+                              }
                               const nextSourceOut = Math.min(
                                 sourceIn + nextDuration * speed,
                                 initial.sourceDuration ?? Number.POSITIVE_INFINITY
@@ -712,7 +734,7 @@ export function EditorScreen(props: {
                             }
                           }}
                           onDragEnd={() => {
-                            if (dragging.current?.id === c.id) {
+                            if (dragging.current?.id === c.id && dragging.current.changed) {
                               props.pushHistory(project.id, dragging.current.mode === "move" ? "move" : "trim");
                             }
                             dragging.current = null;
