@@ -146,7 +146,6 @@ export function AudioScreen({
       gainNode.gain.value = Math.max(0, Math.min(4, selectedClip.volume ?? 1));
       panner.pan.value = Math.max(-1, Math.min(1, selectedClip.pan ?? 0));
       node.connect(gainNode);
-      gainNode.connect(panner);
       let previousNode: AudioNode = gainNode;
       const effectNodes = createAudioEffectNodes(offline, selectedClip.audioEffects ?? []);
       for (const effectNode of effectNodes) {
