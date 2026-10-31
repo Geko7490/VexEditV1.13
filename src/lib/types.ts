@@ -96,6 +96,7 @@ export interface Clip {
   contrast?: number;   // -100 to 100
   saturation?: number; // -100 to 100
   vignette?: number;   // 0 to 100
+  vignetteFeather?: number;
   blur?: number;       // 0 to 100
   hue?: number;        // degrees
 }
