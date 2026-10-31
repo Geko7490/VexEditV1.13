@@ -534,20 +534,50 @@ export async function exportProjectToVideoFile(
     audioDest.stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
   }
 
-  const mimeCandidates = [
-    "video/mp4;codecs=avc1.42E01E",
-    "video/mp4",
-    "video/webm;codecs=vp9,opus",
-    "video/webm;codecs=vp8,opus",
-    "video/webm",
-  ];
+  const codec = (settings.codec || "auto").toLowerCase();
+  const codecCandidates: Record<string, string[]> = {
+    auto: [
+      "video/mp4;codecs=avc1.42E01E",
+      "video/mp4",
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm",
+    ],
+    h264: ["video/mp4;codecs=avc1.42E01E", "video/mp4"],
+    h265: ["video/mp4;codecs=hvc1", "video/mp4;codecs=hev1"],
+    av1: ["video/webm;codecs=av1,opus", "video/webm;codecs=av1", "video/mp4;codecs=av01"],
+  };
+  const mimeCandidates = codecCandidates[codec] || codecCandidates.auto;
   const mimeType = mimeCandidates.find((candidate) => MediaRecorder.isTypeSupported(candidate));
-  if (!mimeType) throw new Error("This device does not support MP4 or WebM video recording.");
+  if (!mimeType) {
+    throw new Error(
+      codec === "auto"
+        ? "This device does not support MP4 or WebM video recording."
+        : `The selected ${codec.toUpperCase()} codec is not supported by this Android WebView. Choose Auto or another codec.`
+    );
+  }
 
-  const bitrateBps = (settings.bitrate > 0 ? settings.bitrate : 8000) * 1000;
+  const baseBitrateMbps: Record<string, number> = {
+    "480p": 2.5,
+    "720p": 5,
+    "1080p": 8,
+    "2K": 16,
+    "4K": 35,
+  };
+  const qualityMultiplier: Record<string, number> = {
+    low: 0.65,
+    medium: 1,
+    high: 1.35,
+    ultra: 1.8,
+  };
+  const estimatedBitrate = (baseBitrateMbps[settings.resolution] || 8) *
+    (fps / 30) *
+    (qualityMultiplier[(settings.quality || "high").toLowerCase()] || 1.35);
+  const bitrateBps = (settings.bitrate > 0 ? settings.bitrate : estimatedBitrate * 1000) * 1000;
   const mediaRecorder = new MediaRecorder(canvasStream, {
     mimeType,
     videoBitsPerSecond: bitrateBps,
+    audioBitsPerSecond: Math.max(64, settings.audioBitrate || 192) * 1000,
   });
   const recordedChunks: Blob[] = [];
   mediaRecorder.ondataavailable = (event) => {
