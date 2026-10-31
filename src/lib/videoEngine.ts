@@ -27,6 +27,11 @@ export function getCachedVideo(url: string): HTMLVideoElement {
   video.playsInline = true;
   video.preload = "auto";
   video.setAttribute("playsinline", "");
+  video.addEventListener("seeked", () => {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event("vexedit:media-frame"));
+    }
+  });
   videoCache.set(url, video);
   return video;
 }
