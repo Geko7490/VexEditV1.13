@@ -434,7 +434,16 @@ export default function App() {
             </div>
           )}
           {overlay === "audio" && (
-            <AudioScreen tr={tr} chains={chains} setChains={setChains} savePreset={savePreset} onBack={() => setOverlay(null)} />
+            <AudioScreen
+              tr={tr}
+              project={activeProject || projects[0] || null}
+              updateClip={updateClip}
+              showToast={showToast}
+              chains={chains}
+              setChains={setChains}
+              savePreset={savePreset}
+              onBack={() => setOverlay(null)}
+            />
           )}
           {overlay === "effects" && (
             <EffectsScreen tr={tr} presets={presets} savePreset={savePreset} deletePreset={deletePreset} onBack={() => setOverlay(null)} />
