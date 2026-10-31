@@ -477,7 +477,7 @@ export function renderCompositeFrame(
       const isVideo = clip.type === "video" && (
         clip.sourceMimeType?.startsWith("video/") === true ||
         imgUrl.startsWith("blob:") ||
-        /\\.(mp4|m4v|mov|webm|mkv|3gp)(?:$|[?#])/i.test(imgUrl)
+        /\.(mp4|m4v|mov|webm|mkv|3gp)(?:$|[?#])/i.test(imgUrl)
       );
       const video = isVideo ? getCachedVideo(imgUrl) : null;
       const img = isVideo ? null : getCachedImage(imgUrl);
