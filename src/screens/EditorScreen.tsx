@@ -1331,6 +1331,17 @@ function ClipView({
       ) : (
         <div className="h-full w-full bg-violet-800/40" />
       )}
+      {clip.keyframes && clip.keyframes.length > 0 && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-1.5">
+          {clip.keyframes.map((keyframe, index) => (
+            <div
+              key={index}
+              className="absolute top-0 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-amber-300 shadow"
+              style={{ left: `${Math.max(0, Math.min(100, (keyframe.time / Math.max(0.01, clip.duration)) * 100))}%` }}
+            />
+          ))}
+        </div>
+      )}
       {selected && (
         <>
           <div
