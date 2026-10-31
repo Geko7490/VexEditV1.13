@@ -5,7 +5,7 @@ import {
 } from "./lib/store";
 import { t } from "./lib/i18n";
 import type {
-  SettingsState, Project, ModuleInfo, Preset, AudioChain, Clip,
+  SettingsState, Project, ModuleInfo, Preset, AudioChain, Clip, ClipKeyframe,
   PreviewSettings, ExportSettings, MediaAsset,
 } from "./lib/types";
 import { MODULE_CATALOG } from "./lib/mock";
@@ -204,10 +204,49 @@ export default function App() {
         const sourceOut = c.sourceOut ?? c.sourceDuration ?? sourceIn + c.duration * (c.speed || 1);
         const sourceSplit = Math.min(sourceOut, sourceIn + rel * (c.speed || 1));
         const hasSourceBounds = c.sourceDuration != null || c.sourceOut != null || c.sourceIn != null;
+        let leftKeyframes: ClipKeyframe[] | undefined;
+        let rightKeyframes: ClipKeyframe[] | undefined;
+        if (c.keyframes?.length) {
+          const properties = ["opacity", "scale", "x", "y", "rotation"] as const;
+          const boundary: ClipKeyframe = { time: rel };
+          for (const property of properties) {
+            const points = c.keyframes
+              .filter((keyframe) => typeof keyframe[property] === "number")
+              .slice()
+              .sort((left, right) => left.time - right.time);
+            if (points.length === 0) continue;
+            let value = points[0][property] as number;
+            if (rel >= points[points.length - 1].time) {
+              value = points[points.length - 1][property] as number;
+            } else if (rel > points[0].time) {
+              for (let index = 0; index < points.length - 1; index++) {
+                const left = points[index];
+                const right = points[index + 1];
+                if (rel >= left.time && rel <= right.time) {
+                  const ratio = (rel - left.time) / Math.max(0.000001, right.time - left.time);
+                  value = (left[property] as number) + ((right[property] as number) - (left[property] as number)) * ratio;
+                  break;
+                }
+              }
+            }
+            boundary[property] = value;
+          }
+          leftKeyframes = [
+            ...c.keyframes.filter((keyframe) => keyframe.time < rel),
+            boundary,
+          ];
+          rightKeyframes = [
+            { ...boundary, time: 0 },
+            ...c.keyframes
+              .filter((keyframe) => keyframe.time > rel)
+              .map((keyframe) => ({ ...keyframe, time: keyframe.time - rel })),
+          ];
+        }
         const a: Clip = {
           ...c,
           duration: rel,
           ...(hasSourceBounds ? { sourceIn, sourceOut: sourceSplit } : {}),
+          ...(leftKeyframes ? { keyframes: leftKeyframes } : {}),
         };
         const b: Clip = {
           ...c,
@@ -215,6 +254,7 @@ export default function App() {
           start: c.start + rel,
           duration: c.duration - rel,
           ...(hasSourceBounds ? { sourceIn: sourceSplit, sourceOut } : {}),
+          ...(rightKeyframes ? { keyframes: rightKeyframes } : {}),
         };
         return { ...p, clips: p.clips.filter((x) => x.id !== clipId).concat(a, b), updatedAt: Date.now() };
       })
