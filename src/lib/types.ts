@@ -61,7 +61,10 @@ export interface Clip {
   frozen: boolean;
   effects: string[];
   thumb?: string;
-  src?: string; // real video or image URL / blob URL
+  src?: string; // persistent media key, blob URL, or image/video URL
+  sourceDuration?: number; // original media duration in seconds
+  sourceIn?: number; // source-media in point in seconds
+  sourceOut?: number; // source-media out point in seconds
   volume: number;
   x: number;
   y: number;
