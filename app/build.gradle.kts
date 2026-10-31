@@ -5,13 +5,14 @@ plugins {
 }
 
 val npmExecutable = if (System.getProperty("os.name").lowercase().contains("windows")) "npm.cmd" else "npm"
-val webAssetsDirectory = layout.projectDirectory.dir("src/main/assets/web")
+val webAssetsDirectory = layout.projectDirectory.dir("src/main/assets")
 
 // Build the existing React editor and package the complete Vite output into the APK.
 // This makes the app launch offline instead of showing a separate placeholder screen.
 tasks.register("buildWebEditor") {
     inputs.files(
         rootProject.fileTree("src"),
+        rootProject.fileTree("public"),
         rootProject.file("index.html"),
         rootProject.file("package.json"),
         rootProject.file("package-lock.json"),
@@ -33,8 +34,8 @@ tasks.register("buildWebEditor") {
             from(rootProject.file("dist"))
             into(webAssetsDirectory)
         }
-        check(file("src/main/assets/web/index.html").isFile) {
-            "VexEdit web editor build did not produce app/src/main/assets/web/index.html"
+        check(file("src/main/assets/index.html").isFile) {
+            "VexEdit web editor build did not produce app/src/main/assets/index.html"
         }
     }
 }
