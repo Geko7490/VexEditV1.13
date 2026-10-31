@@ -1,4 +1,4 @@
-import type { Project, Clip, ExportSettings } from "./types";
+import type { Project, Clip, ExportSettings, AudioEffectInstance } from "./types";
 
 // In-memory media cache for loaded images and videos
 const imageCache: Map<string, HTMLImageElement> = new Map();
@@ -45,9 +45,107 @@ let previewAudioContext: AudioContext | null = null;
 const audioNodeCache = new WeakMap<HTMLMediaElement, {
   gain: GainNode;
   panner: StereoPannerNode;
+  effectNodes: AudioNode[];
+  effectsSignature: string;
 }>();
 
-function ensureMediaAudioNodes(media: HTMLMediaElement) {
+function createAudioEffectNodes(
+  context: BaseAudioContext,
+  effects: AudioEffectInstance[]
+): AudioNode[] {
+  const nodes: AudioNode[] = [];
+  for (const effect of effects) {
+    const params = effect.params || {};
+    switch (effect.id) {
+      case "afx.eq": {
+        const low = context.createBiquadFilter();
+        low.type = "lowshelf";
+        low.frequency.value = 120;
+        low.gain.value = Number(params.low ?? 0);
+        const mid = context.createBiquadFilter();
+        mid.type = "peaking";
+        mid.frequency.value = 1000;
+        mid.Q.value = 1;
+        mid.gain.value = Number(params.mid ?? 0);
+        const high = context.createBiquadFilter();
+        high.type = "highshelf";
+        high.frequency.value = 8000;
+        high.gain.value = Number(params.high ?? 0);
+        nodes.push(low, mid, high);
+        break;
+      }
+      case "afx.compressor": {
+        const compressor = context.createDynamicsCompressor();
+        compressor.threshold.value = Number(params.threshold ?? -20);
+        compressor.ratio.value = Number(params.ratio ?? 4);
+        compressor.attack.value = Number(params.attack ?? 10) / 1000;
+        compressor.release.value = Number(params.release ?? 100) / 1000;
+        nodes.push(compressor);
+        break;
+      }
+      case "afx.limiter": {
+        const limiter = context.createDynamicsCompressor();
+        limiter.threshold.value = Number(params.ceiling ?? -1);
+        limiter.ratio.value = 20;
+        limiter.attack.value = 0.003;
+        limiter.release.value = 0.05;
+        nodes.push(limiter);
+        break;
+      }
+      case "afx.noisegate": {
+        const gate = context.createDynamicsCompressor();
+        gate.threshold.value = Number(params.threshold ?? -40);
+        gate.ratio.value = 20;
+        gate.attack.value = 0.003;
+        gate.release.value = Number(params.release ?? 100) / 1000;
+        nodes.push(gate);
+        break;
+      }
+      case "afx.distortion": {
+        const shaper = context.createWaveShaper();
+        const amount = Math.max(0, Math.min(100, Number(params.amount ?? 0)));
+        const curve = new Float32Array(44100);
+        const drive = amount * 4;
+        for (let index = 0; index < curve.length; index++) {
+          const value = (index * 2) / (curve.length - 1) - 1;
+          curve[index] = drive === 0
+            ? value
+            : ((3 + drive) * value * 20 * (Math.PI / 180)) /
+              (Math.PI + drive * Math.abs(value));
+        }
+        shaper.curve = curve;
+        shaper.oversample = "4x";
+        nodes.push(shaper);
+        break;
+      }
+      case "afx.delay": {
+        const delay = context.createDelay(2);
+        delay.delayTime.value = Math.max(0.001, Math.min(2, Number(params.time ?? 250) / 1000));
+        nodes.push(delay);
+        break;
+      }
+      case "afx.reverb": {
+        const convolver = context.createConvolver();
+        const decay = Math.max(0.1, Math.min(10, Number(params.decay ?? 2)));
+        const length = Math.max(1, Math.floor(context.sampleRate * decay));
+        const impulse = context.createBuffer(2, length, context.sampleRate);
+        for (let channel = 0; channel < 2; channel++) {
+          const data = impulse.getChannelData(channel);
+          for (let index = 0; index < length; index++) {
+            const fade = Math.pow(1 - index / length, 2 + decay * 0.35);
+            data[index] = (Math.random() * 2 - 1) * fade;
+          }
+        }
+        convolver.buffer = impulse;
+        nodes.push(convolver);
+        break;
+      }
+    }
+  }
+  return nodes;
+}
+
+function ensureMediaAudioNodes(media: HTMLMediaElement, effects: AudioEffectInstance[] = []) {
   const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
   if (!AudioContextClass) return null;
   previewAudioContext ||= new AudioContextClass();
@@ -57,10 +155,24 @@ function ensureMediaAudioNodes(media: HTMLMediaElement) {
     const gain = previewAudioContext.createGain();
     const panner = previewAudioContext.createStereoPanner();
     source.connect(gain);
-    gain.connect(panner);
     panner.connect(previewAudioContext.destination);
-    nodes = { gain, panner };
+    nodes = { gain, panner, effectNodes: [], effectsSignature: "" };
     audioNodeCache.set(media, nodes);
+  }
+
+  const signature = JSON.stringify(effects);
+  if (nodes.effectsSignature !== signature) {
+    nodes.gain.disconnect();
+    nodes.effectNodes.forEach((node) => node.disconnect());
+    const nextNodes = createAudioEffectNodes(previewAudioContext, effects);
+    let previous: AudioNode = nodes.gain;
+    for (const node of nextNodes) {
+      previous.connect(node);
+      previous = node;
+    }
+    previous.connect(nodes.panner);
+    nodes.effectNodes = nextNodes;
+    nodes.effectsSignature = signature;
   }
   return nodes;
 }
@@ -74,9 +186,14 @@ export async function resumePreviewAudio(): Promise<void> {
   }
 }
 
-function configurePreviewAudio(media: HTMLMediaElement, volume: number, pan: number) {
+function configurePreviewAudio(
+  media: HTMLMediaElement,
+  volume: number,
+  pan: number,
+  effects: AudioEffectInstance[] = []
+) {
   try {
-    const nodes = ensureMediaAudioNodes(media);
+    const nodes = ensureMediaAudioNodes(media, effects);
     if (!nodes) {
       media.volume = Math.max(0, Math.min(1, volume));
       return;
@@ -234,7 +351,8 @@ export function renderCompositeFrame(
         configurePreviewAudio(
           audio,
           (clip.volume ?? 1) * (track?.volume ?? 1),
-          clip.pan ?? 0
+          clip.pan ?? 0,
+          clip.audioEffects ?? []
         );
         if (audio.paused && !audio.ended) void audio.play().catch(() => undefined);
       } else {
