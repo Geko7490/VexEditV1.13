@@ -127,8 +127,10 @@ export default function App() {
       prev.map((p) => {
         if (p.id !== id) return p;
         const snapshot = JSON.stringify({ clips: p.clips, tracks: p.tracks });
+        const currentHistory = p.history.slice(0, p.historyIndex + 1);
+        if (currentHistory[currentHistory.length - 1]?.snapshot === snapshot) return p;
         const entry = { label, snapshot, at: Date.now() };
-        const hist = p.history.slice(0, p.historyIndex + 1).concat(entry);
+        const hist = currentHistory.concat(entry);
         const trimmed = hist.length > 50 ? hist.slice(hist.length - 50) : hist;
         return { ...p, history: trimmed, historyIndex: trimmed.length - 1, updatedAt: Date.now() };
       })
