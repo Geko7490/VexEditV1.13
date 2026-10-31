@@ -63,6 +63,7 @@ export interface Clip {
   thumb?: string;
   src?: string; // persistent media key, blob URL, or image/video URL
   sourceDuration?: number; // original media duration in seconds
+  sourceMimeType?: string; // MIME type of the original imported file
   sourceIn?: number; // source-media in point in seconds
   sourceOut?: number; // source-media out point in seconds
   volume: number;
