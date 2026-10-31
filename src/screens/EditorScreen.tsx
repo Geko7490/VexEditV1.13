@@ -263,7 +263,7 @@ export function EditorScreen(props: {
       }
 
       const clipType: Clip["type"] = isAudio ? "audio" : isImage ? "image" : "video";
-      const trackId = isAudio ? 3 : 2;
+      const trackId = isAudio ? 3 : 1;
       const end = project.clips
         .filter((c) => c.track === trackId)
         .reduce((a, c) => Math.max(a, c.start + c.duration), tNow);
