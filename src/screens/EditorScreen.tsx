@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import type {
   Clip,
+  ClipKeyframe,
   Project,
   RenderJob,
   SettingsState,
@@ -12,7 +13,8 @@ import type {
 } from "../lib/types";
 import { formatClock, uid } from "../lib/store";
 import { MEDIA_LIBRARY, waveBars } from "../lib/demo";
-import { renderCompositeFrame, exportProjectToVideoFile } from "../lib/videoEngine";
+import { renderCompositeFrame, exportProjectToVideoFile, resumePreviewAudio } from "../lib/videoEngine";
+import { resolveMediaSource, saveMediaFile } from "../lib/mediaStore";
 import * as Ic from "../components/icons";
 import { Sheet, Slider, Select, Field, Primary, Ghost, Progress, Input } from "../components/ui";
 
@@ -23,21 +25,17 @@ export function EditorScreen(props: {
   project: Project;
   settings: SettingsState;
   saved: boolean;
-  renderJobs: RenderJob[];
   onBack: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  pushHistory: (id: string, label: string) => void;
+  showToast: (message: string) => void;
   updateProject: (id: string, patch: Partial<Project>) => void;
   addClip: (projectId: string, clip: Omit<Clip, "id">) => void;
   deleteClip: (projectId: string, clipId: string) => void;
   duplicateClip: (projectId: string, clipId: string) => void;
   splitClip: (projectId: string, clipId: string, at: number) => void;
   updateClip: (projectId: string, clipId: string, patch: Partial<Clip>) => void;
-  startRender: (projectId: string) => void;
-  pauseRender: (id: string) => void;
-  resumeRender: (id: string) => void;
-  cancelRender: (id: string) => void;
-  retryRender: (id: string) => void;
   updatePreview: (p: Partial<PreviewSettings>) => void;
   updateExport: (p: Partial<ExportSettings>) => void;
 }) {
@@ -47,6 +45,7 @@ export function EditorScreen(props: {
   const [tNow, setTNow] = useState(12.0);
   const [zoom, setZoom] = useState(1.05);
   const [snap, setSnap] = useState(true);
+  const [ripple, setRipple] = useState(false);
   const [selected, setSelected] = useState<string | null>(project.clips.find((c) => c.track === 2)?.id ?? null);
   const [tool, setTool] = useState<Tool>("edit");
   const [addOpen, setAddOpen] = useState(false);
@@ -55,20 +54,103 @@ export function EditorScreen(props: {
   const [aspectOpen, setAspectOpen] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [activeExportJob, setActiveExportJob] = useState<RenderJob | null>(null);
+  const [savingExport, setSavingExport] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+  const [resolvedMedia, setResolvedMedia] = useState<Record<string, string>>({});
+  const [previewFrameVersion, setPreviewFrameVersion] = useState(0);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const dragging = useRef<{ id: string; start: number; x: number } | null>(null);
+  const dragging = useRef<{
+    id: string;
+    mode: "move" | "left" | "right";
+    startX: number;
+    initial: Clip;
+    clips: Clip[];
+    changed: boolean;
+  } | null>(null);
   const cancelExportRef = useRef(false);
 
   useEffect(() => {
     setSelected(project.clips.find((c) => c.track === 2)?.id ?? null);
   }, [project.id]);
 
+  useEffect(() => {
+    const refreshPreview = () => setPreviewFrameVersion((version) => version + 1);
+    window.addEventListener("vexedit:media-frame", refreshPreview);
+    return () => window.removeEventListener("vexedit:media-frame", refreshPreview);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const resolveAll = async () => {
+      const entries = await Promise.all(project.clips.map(async (clip) => {
+        const reference = clip.src || clip.thumb;
+        try {
+          const resolved = await resolveMediaSource(reference);
+          return [clip.id, resolved || ""] as const;
+        } catch (error) {
+          console.warn("Could not restore imported media", clip.name, error);
+          return [clip.id, ""] as const;
+        }
+      }));
+      if (!cancelled) {
+        setResolvedMedia((previous) => ({ ...previous, ...Object.fromEntries(entries) }));
+      }
+    };
+    void resolveAll();
+    return () => { cancelled = true; };
+  }, [project.id, project.clips]);
+
   const duration = Math.max(15, ...project.clips.map((c) => c.start + c.duration), 1);
   const px = 38 * zoom;
   const sel = project.clips.find((c) => c.id === selected) || null;
+  const localKeyframeTime = sel ? Math.max(0, Math.min(sel.duration, tNow - sel.start)) : 0;
+  const keyframeTolerance = 0.5 / Math.max(1, project.fps);
+  const currentKeyframe = sel?.keyframes?.find(
+    (keyframe) => Math.abs(keyframe.time - localKeyframeTime) <= keyframeTolerance
+  ) ?? null;
+
+  const updateAnimatedProperty = (property: "opacity" | "scale" | "x" | "y" | "rotation", value: number) => {
+    if (!sel) return;
+    const patch: Partial<Clip> = { [property]: value };
+    if (currentKeyframe) {
+      patch.keyframes = (sel.keyframes || []).map((keyframe) =>
+        Math.abs(keyframe.time - currentKeyframe.time) <= keyframeTolerance
+          ? { ...keyframe, [property]: value }
+          : keyframe
+      );
+    }
+    props.updateClip(project.id, sel.id, patch);
+  };
+
+  const addOrUpdateKeyframe = () => {
+    if (!sel) return;
+    const nextKeyframe: ClipKeyframe = {
+      time: localKeyframeTime,
+      opacity: sel.opacity,
+      scale: sel.scale,
+      x: sel.x,
+      y: sel.y,
+      rotation: sel.rotation,
+    };
+    const keyframes = (sel.keyframes || []).filter(
+      (keyframe) => Math.abs(keyframe.time - localKeyframeTime) > keyframeTolerance
+    );
+    keyframes.push(nextKeyframe);
+    keyframes.sort((a, b) => a.time - b.time);
+    props.updateClip(project.id, sel.id, { keyframes });
+  };
+
+  const deleteCurrentKeyframe = () => {
+    if (!sel || !currentKeyframe) return;
+    props.updateClip(project.id, sel.id, {
+      keyframes: (sel.keyframes || []).filter(
+        (keyframe) => Math.abs(keyframe.time - currentKeyframe.time) > keyframeTolerance
+      ),
+    });
+  };
 
   // Real Canvas-based Preview Renderer
   useEffect(() => {
@@ -93,11 +175,20 @@ export function EditorScreen(props: {
       canvas.height = h;
     }
 
-    renderCompositeFrame(ctx, w, h, project, tNow, {
+    const previewProject: Project = {
+      ...project,
+      clips: project.clips.map((clip) => ({
+        ...clip,
+        src: resolvedMedia[clip.id] || clip.src,
+        thumb: resolvedMedia[clip.id] || clip.thumb,
+      })),
+    };
+    renderCompositeFrame(ctx, w, h, previewProject, tNow, {
       selectedClipId: selected,
       previewQuality: settings.preview.effectQuality,
+      playing,
     });
-  }, [project, tNow, selected, settings.preview.effectQuality]);
+  }, [project, tNow, selected, settings.preview.effectQuality, playing, resolvedMedia, previewFrameVersion]);
 
   // Real Playhead Loop
   useEffect(() => {
@@ -130,36 +221,74 @@ export function EditorScreen(props: {
     setTNow(Math.max(0, Math.min(duration, x / px)));
   };
 
-  const handleFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
 
-    Array.from(files).forEach((file) => {
+    const nextStartByTrack = new Map<number, number>();
+    for (const file of files) {
       const isAudio = file.type.startsWith("audio/");
       const isVideo = file.type.startsWith("video/");
       const isImage = file.type.startsWith("image/");
-      const blobUrl = URL.createObjectURL(file);
+      if (!isAudio && !isVideo && !isImage) continue;
+
+      // Persist the original bytes in IndexedDB. The project stores a stable
+      // media key rather than a temporary blob: URL that dies when the app closes.
+      let persistentSource: string;
+      try {
+        persistentSource = await saveMediaFile(file);
+      } catch (error) {
+        props.showToast(error instanceof Error ? error.message : "Could not save imported media.");
+        continue;
+      }
+      const metadataUrl = URL.createObjectURL(file);
+      let mediaDuration = 5;
+
+      if (isVideo || isAudio) {
+        mediaDuration = await new Promise<number>((resolve) => {
+          const media = document.createElement(isAudio ? "audio" : "video");
+          media.preload = "metadata";
+          media.onloadedmetadata = () => {
+            const duration = media.duration;
+            URL.revokeObjectURL(metadataUrl);
+            resolve(Number.isFinite(duration) && duration > 0 ? duration : 5);
+          };
+          media.onerror = () => {
+            URL.revokeObjectURL(metadataUrl);
+            resolve(5);
+          };
+          media.src = metadataUrl;
+        });
+      } else {
+        URL.revokeObjectURL(metadataUrl);
+      }
 
       const clipType: Clip["type"] = isAudio ? "audio" : isImage ? "image" : "video";
       const trackId = isAudio ? 3 : 2;
-      const end = project.clips
-        .filter((c) => c.track === trackId)
-        .reduce((a, c) => Math.max(a, c.start + c.duration), tNow);
+      const existingEnd = project.clips
+        .filter((clip) => clip.track === trackId)
+        .reduce((latest, clip) => Math.max(latest, clip.start + clip.duration), tNow);
+      const end = Math.max(existingEnd, nextStartByTrack.get(trackId) ?? tNow);
+      nextStartByTrack.set(trackId, end + mediaDuration);
 
       props.addClip(project.id, {
         track: trackId,
         type: clipType,
-        name: file.name.slice(0, 18),
+        name: file.name.slice(0, 32),
         start: end,
-        duration: isAudio ? 12 : 5,
+        duration: mediaDuration,
+        sourceDuration: isVideo || isAudio ? mediaDuration : undefined,
+        sourceMimeType: file.type,
+        sourceIn: isVideo || isAudio ? 0 : undefined,
+        sourceOut: isVideo || isAudio ? mediaDuration : undefined,
         color: isAudio ? "#3ee0c8" : "#8b67f7",
         opacity: 1,
         speed: 1,
         reversed: false,
         frozen: false,
         effects: [],
-        src: blobUrl,
-        thumb: isImage || isVideo ? blobUrl : undefined,
+        src: persistentSource,
+        thumb: isImage ? persistentSource : undefined,
         volume: 1,
         x: 0,
         y: 0,
@@ -167,9 +296,10 @@ export function EditorScreen(props: {
         rotation: 0,
         crop: 0,
       });
-    });
+    }
 
     setAddOpen(false);
+    e.target.value = "";
   };
 
   const handleAddText = () => {
@@ -226,8 +356,16 @@ export function EditorScreen(props: {
     setActiveExportJob(newJob);
 
     try {
+      const exportProject: Project = {
+        ...project,
+        clips: await Promise.all(project.clips.map(async (clip) => ({
+          ...clip,
+          src: await resolveMediaSource(clip.src),
+          thumb: await resolveMediaSource(clip.thumb),
+        }))),
+      };
       const { downloadUrl, fileName } = await exportProjectToVideoFile(
-        project,
+        exportProject,
         settings.export,
         (progress, frame, totalFrames, etaSec) => {
           setActiveExportJob((prev) =>
@@ -271,6 +409,50 @@ export function EditorScreen(props: {
             : null
         );
       }
+    }
+  };
+
+  const saveExportToDevice = async () => {
+    if (!activeExportJob?.downloadBlobUrl || savingExport) return;
+    const fileName = activeExportJob.outputPath || "VexEdit_Export.webm";
+    const bridge = (window as any).VexEditAndroid;
+    if (!bridge?.isAvailable?.()) {
+      const anchor = document.createElement("a");
+      anchor.href = activeExportJob.downloadBlobUrl;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      return;
+    }
+
+    let token = "";
+    setSavingExport(true);
+    setSaveMessage("Preparing video for device storage…");
+    try {
+      const response = await fetch(activeExportJob.downloadBlobUrl);
+      if (!response.ok) throw new Error("Could not read the rendered video.");
+      const blob = await response.blob();
+      token = bridge.beginSave(fileName, blob.type || "video/webm", blob.size);
+      if (!token) throw new Error("Android could not start saving the video.");
+
+      const chunkSize = 256 * 1024;
+      for (let offset = 0; offset < blob.size; offset += chunkSize) {
+        const bytes = new Uint8Array(await blob.slice(offset, offset + chunkSize).arrayBuffer());
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        const accepted = bridge.appendSaveChunk(token, btoa(binary));
+        if (!accepted) throw new Error("Android could not write a video chunk.");
+        setSaveMessage(`Saving video… ${Math.min(100, Math.round(((offset + bytes.length) / blob.size) * 100))}%`);
+      }
+      if (!bridge.finishSave(token)) throw new Error("Android could not finish saving the video.");
+      token = "";
+      setSaveMessage("Saving to Movies/VexEdit. Android will confirm when it is complete.");
+    } catch (error) {
+      if (token) bridge.cancelSave(token);
+      setSaveMessage(error instanceof Error ? error.message : "Could not save the video.");
+    } finally {
+      setSavingExport(false);
     }
   };
 
@@ -336,7 +518,10 @@ export function EditorScreen(props: {
                   <Ic.IcSkipBack size={18} />
                 </button>
                 <button
-                  onClick={() => setPlaying((p) => !p)}
+                  onClick={() => {
+                    if (!playing) void resumePreviewAudio().catch(() => undefined);
+                    setPlaying((p) => !p);
+                  }}
                   className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white transition active:scale-95"
                 >
                   {playing ? <Ic.IcPause size={18} /> : <Ic.IcPlay size={18} />}
@@ -387,6 +572,9 @@ export function EditorScreen(props: {
         <button onClick={() => setSnap((s) => !s)} className={`flex items-center gap-1 px-2 py-2 ${snap ? "text-violet-300" : ""}`}>
           <Ic.IcSnap size={18} /> {tr("snap")}
         </button>
+        <button onClick={() => setRipple((value) => !value)} className={`flex items-center gap-1 px-2 py-2 ${ripple ? "text-violet-300" : "text-zinc-500"}`}>
+          <Ic.IcLayers size={16} /> Ripple
+        </button>
         <div className="ml-auto flex items-center gap-1 text-zinc-400">
           <button onClick={() => setZoom((z) => Math.max(0.5, z - 0.15))} className="p-2">
             <Ic.IcZoomOut size={18} />
@@ -435,19 +623,38 @@ export function EditorScreen(props: {
               const h = tk.type === "video" ? 58 : tk.type === "audio" ? 44 : 36;
               return (
                 <div key={tk.id} className="relative mb-1 flex items-center" style={{ height: h }}>
-                  <button
-                    onClick={() => {
-                      props.updateProject(project.id, {
-                        tracks: project.tracks.map((t) => (t.id === tk.id ? { ...t, muted: !t.muted } : t)),
-                      });
-                    }}
-                    title={tk.muted ? "Unmute track" : "Mute track"}
-                    className={`sticky left-0 z-20 flex h-full w-10 items-center justify-center bg-[#111114] ${
-                      tk.muted ? "text-rose-400" : "text-zinc-500"
-                    }`}
-                  >
-                    {icon}
-                  </button>
+                  <div className="sticky left-0 z-20 flex h-full w-10 items-center justify-center bg-[#111114]">
+                    <button
+                      onClick={() => {
+                        props.pushHistory(project.id, "track-mute:before");
+                        props.updateProject(project.id, {
+                          tracks: project.tracks.map((track) => (track.id === tk.id ? { ...track, muted: !track.muted } : track)),
+                        });
+                        props.pushHistory(project.id, "track-mute");
+                      }}
+                      title={tk.muted ? "Unmute track" : "Mute track"}
+                      className={`flex h-full w-full items-center justify-center ${
+                        tk.muted ? "text-rose-400" : "text-zinc-500"
+                      }`}
+                    >
+                      {icon}
+                    </button>
+                    <button
+                      onClick={() => {
+                        props.pushHistory(project.id, "track-lock:before");
+                        props.updateProject(project.id, {
+                          tracks: project.tracks.map((track) => (track.id === tk.id ? { ...track, locked: !track.locked } : track)),
+                        });
+                        props.pushHistory(project.id, "track-lock");
+                      }}
+                      title={tk.locked ? "Unlock track" : "Lock track"}
+                      className={`absolute right-0.5 top-0.5 z-30 flex h-4 w-4 items-center justify-center rounded bg-[#27232f] text-[9px] ${
+                        tk.locked ? "text-amber-300" : "text-zinc-600"
+                      }`}
+                    >
+                      {tk.locked ? "L" : "·"}
+                    </button>
+                  </div>
                   <div className="relative h-full flex-1">
                     {project.clips
                       .filter((c) => c.track === tk.id)
@@ -455,20 +662,122 @@ export function EditorScreen(props: {
                         <ClipView
                           key={c.id}
                           clip={c}
+                          mediaUrl={resolvedMedia[c.id] || c.thumb || c.src || ""}
                           px={px}
                           selected={selected === c.id}
                           height={h - 8}
+                          locked={tk.locked}
                           onSelect={() => setSelected(c.id)}
-                          onDragStart={(x) => {
-                            dragging.current = { id: c.id, start: c.start, x };
+                          onDragStart={(mode, x) => {
+                            dragging.current = {
+                              id: c.id,
+                              mode,
+                              startX: x,
+                              initial: { ...c },
+                              clips: project.clips.map((clip) => ({ ...clip })),
+                              changed: false,
+                            };
                           }}
                           onDrag={(x) => {
                             const d = dragging.current;
                             if (!d || d.id !== c.id) return;
-                            let next = d.start + (x - d.x) / px;
-                            next = Math.max(0, next);
-                            if (snap) next = Math.round(next * 2) / 2;
-                            props.updateClip(project.id, c.id, { start: next });
+                            const delta = (x - d.startX) / px;
+                            const initial = d.initial;
+                            const speed = Math.max(0.01, initial.speed || 1);
+                            const trimDelta = initial.type === "image"
+                              ? delta
+                              : Math.round(delta * Math.max(1, project.fps)) / Math.max(1, project.fps);
+                            const minDuration = initial.type === "image"
+                              ? 0.01
+                              : 1 / Math.max(1, project.fps);
+
+                            if (d.mode === "move") {
+                              let nextStart = Math.max(0, initial.start + delta);
+                              if (snap) nextStart = Math.round(nextStart * project.fps) / project.fps;
+                              if (Math.abs(nextStart - initial.start) < 0.0001) return;
+                              if (!d.changed) {
+                                props.pushHistory(project.id, "move");
+                                d.changed = true;
+                              }
+                              props.updateClip(project.id, c.id, { start: nextStart });
+                              return;
+                            }
+
+                            const sourceIn = Math.max(0, initial.sourceIn ?? 0);
+                            const sourceOut = initial.sourceOut ??
+                              (initial.sourceDuration != null ? initial.sourceDuration : sourceIn + initial.duration * speed);
+
+                            if (d.mode === "left") {
+                              const hasSourceBounds = initial.type !== "image" && (initial.sourceDuration != null || initial.sourceOut != null || initial.sourceIn != null);
+                              const minDelta = hasSourceBounds
+                                ? -Math.min(initial.start, sourceIn / speed)
+                                : -initial.start;
+                              const maxDelta = Math.max(0, initial.duration - minDuration);
+                              const applied = Math.max(minDelta, Math.min(maxDelta, trimDelta));
+                              if (Math.abs(applied) < 0.0001) return;
+                              if (!d.changed) {
+                                props.pushHistory(project.id, "trim");
+                                d.changed = true;
+                              }
+                              const nextDuration = Math.max(minDuration, initial.duration - applied);
+                              const nextKeyframes = initial.keyframes?.length
+                                ? rebaseKeyframesAfterLeftTrim(initial.keyframes, applied)
+                                : undefined;
+                              props.updateClip(project.id, c.id, {
+                                start: Math.max(0, initial.start + applied),
+                                duration: nextDuration,
+                                ...(hasSourceBounds ? {
+                                  sourceIn: Math.max(0, sourceIn + applied * speed),
+                                  sourceOut,
+                                } : {}),
+                                ...(nextKeyframes ? { keyframes: nextKeyframes } : {}),
+                              });
+                            } else {
+                                const hasSourceBounds = initial.sourceDuration != null || initial.sourceOut != null || initial.sourceIn != null;
+                              const sourceEndLimit = initial.sourceDuration ?? initial.sourceOut ?? sourceIn + initial.duration * speed;
+                              const maxDuration = hasSourceBounds
+                                ? Math.max(minDuration, (sourceEndLimit - sourceIn) / speed)
+                                : 600;
+                              const nextDuration = Math.max(
+                                minDuration,
+                                Math.min(maxDuration, initial.duration + trimDelta)
+                              );
+                              if (Math.abs(nextDuration - initial.duration) < 0.0001) return;
+                              if (!d.changed) {
+                                props.pushHistory(project.id, "trim");
+                                d.changed = true;
+                              }
+                              const nextSourceOut = Math.min(
+                                sourceIn + nextDuration * speed,
+                                initial.sourceDuration ?? Number.POSITIVE_INFINITY
+                              );
+                              const clipPatch: Partial<Clip> = {
+                                duration: nextDuration,
+                                ...(hasSourceBounds ? { sourceIn, sourceOut: nextSourceOut } : {}),
+                              };
+                              const mainVideoTrack = project.tracks.find((track) => track.type === "video")?.id ?? 2;
+                              const timelineDelta = nextDuration - initial.duration;
+
+                              if (ripple && initial.track === mainVideoTrack) {
+                                const originalEnd = initial.start + initial.duration;
+                                const nextClips = d.clips.map((other) => {
+                                  if (other.id === initial.id) return { ...other, ...clipPatch };
+                                  if (other.track === mainVideoTrack && other.start >= originalEnd - 0.001) {
+                                    return { ...other, start: Math.max(0, other.start + timelineDelta) };
+                                  }
+                                  return other;
+                                });
+                                props.updateProject(project.id, { clips: nextClips });
+                              } else {
+                                props.updateClip(project.id, c.id, clipPatch);
+                              }
+                            }
+                          }}
+                          onDragEnd={() => {
+                            if (dragging.current?.id === c.id && dragging.current.changed) {
+                              props.pushHistory(project.id, dragging.current.mode === "move" ? "move" : "trim");
+                            }
+                            dragging.current = null;
                           }}
                         />
                       ))}
@@ -544,10 +853,19 @@ export function EditorScreen(props: {
                 value={sel.speed * 100}
                 min={10}
                 max={300}
-                onChange={(v: number) => props.updateClip(project.id, sel.id, { speed: v / 100 })}
+                onChange={(v: number) => {
+                  const nextSpeed = v / 100;
+                  const sourceIn = sel.sourceIn ?? 0;
+                  const sourceOut = sel.sourceOut ?? sel.sourceDuration ?? sourceIn + sel.duration * (sel.speed || 1);
+                  const sourceLength = Math.max(1 / Math.max(1, project.fps), sourceOut - sourceIn);
+                  props.updateClip(project.id, sel.id, {
+                    speed: nextSpeed,
+                    duration: sourceLength / nextSpeed,
+                  });
+                }}
               />
               <div className="mt-2 flex gap-2">
-                <Ghost onClick={() => props.updateClip(project.id, sel.id, { reversed: !sel.reversed })}>
+                <Ghost disabled={sel.type !== "video"} onClick={() => props.updateClip(project.id, sel.id, { reversed: !sel.reversed })}>
                   {tr("reverse")} {sel.reversed ? "✓" : ""}
                 </Ghost>
                 <Ghost onClick={() => props.updateClip(project.id, sel.id, { frozen: !sel.frozen })}>
@@ -646,8 +964,10 @@ export function EditorScreen(props: {
                 {(
                   [
                     ["none", "None"],
-                    ["fade", "Cross Fade"],
-                    ["wipe", "Wipe Transition"],
+                    ["fade", "Fade"],
+                    ["dissolve", "Dissolve"],
+                    ["wipe", "Wipe"],
+                    ["zoom", "Zoom"],
                   ] as [TransitionType, string][]
                 ).map(([tKey, tLabel]) => (
                   <button
@@ -665,30 +985,79 @@ export function EditorScreen(props: {
           )}
 
           {tool === "animation" && (
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <div className="mb-1 text-xs text-zinc-400">{tr("opacity")}</div>
-                <Slider
-                  value={sel.opacity * 100}
-                  onChange={(v: number) => props.updateClip(project.id, sel.id, { opacity: v / 100 })}
-                />
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Ghost onClick={addOrUpdateKeyframe}>
+                  {currentKeyframe ? "Update Keyframe" : "Add Keyframe"}
+                </Ghost>
+                <Ghost danger disabled={!currentKeyframe} onClick={deleteCurrentKeyframe}>
+                  Delete
+                </Ghost>
+                <span className="text-[10px] text-zinc-500">
+                  {(sel.keyframes || []).length} keyframes · {localKeyframeTime.toFixed(2)}s
+                </span>
               </div>
-              <div>
-                <div className="mb-1 text-xs text-zinc-400">{tr("scale")}</div>
-                <Slider
-                  value={sel.scale * 100}
-                  min={10}
-                  max={250}
-                  onChange={(v: number) => props.updateClip(project.id, sel.id, { scale: v / 100 })}
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="mb-1 text-xs text-zinc-400">{tr("opacity")}</div>
+                  <Slider
+                    value={sel.opacity * 100}
+                    onChange={(v: number) => updateAnimatedProperty("opacity", v / 100)}
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs text-zinc-400">{tr("scale")}</div>
+                  <Slider
+                    value={sel.scale * 100}
+                    min={10}
+                    max={250}
+                    onChange={(v: number) => updateAnimatedProperty("scale", v / 100)}
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs text-zinc-400">X Position</div>
+                  <Slider
+                    value={sel.x + 50}
+                    min={0}
+                    max={100}
+                    onChange={(v: number) => updateAnimatedProperty("x", v - 50)}
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs text-zinc-400">Y Position</div>
+                  <Slider
+                    value={sel.y + 50}
+                    min={0}
+                    max={100}
+                    onChange={(v: number) => updateAnimatedProperty("y", v - 50)}
+                  />
+                </div>
+                <div className="col-span-2">
+                  <div className="mb-1 text-xs text-zinc-400">Rotation</div>
+                  <Slider
+                    value={sel.rotation + 180}
+                    min={0}
+                    max={360}
+                    onChange={(v: number) => updateAnimatedProperty("rotation", v - 180)}
+                  />
+                </div>
               </div>
             </div>
           )}
 
           {tool === "crop" && (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="mb-1 text-xs text-zinc-400">{tr("rotation")}</div>
+                <div className="mb-1 flex justify-between text-xs text-zinc-400"><span>Crop / Zoom</span><span>{sel.crop ?? 0}%</span></div>
+                <Slider
+                  value={sel.crop ?? 0}
+                  min={0}
+                  max={60}
+                  onChange={(v: number) => props.updateClip(project.id, sel.id, { crop: v })}
+                />
+              </div>
+              <div>
+                <div className="mb-1 flex justify-between text-xs text-zinc-400"><span>{tr("rotation")}</span><span>{sel.rotation}°</span></div>
                 <Slider
                   value={sel.rotation + 180}
                   min={0}
@@ -703,6 +1072,15 @@ export function EditorScreen(props: {
                   min={0}
                   max={100}
                   onChange={(v: number) => props.updateClip(project.id, sel.id, { x: v - 50 })}
+                />
+              </div>
+              <div>
+                <div className="mb-1 text-xs text-zinc-400">Y Position</div>
+                <Slider
+                  value={sel.y + 50}
+                  min={0}
+                  max={100}
+                  onChange={(v: number) => props.updateClip(project.id, sel.id, { y: v - 50 })}
                 />
               </div>
             </div>
@@ -901,6 +1279,9 @@ export function EditorScreen(props: {
               </span>
             </div>
             <Progress value={activeExportJob.progress} />
+            {activeExportJob.status === "FAILED" && activeExportJob.error && (
+              <p className="mt-2 text-xs text-rose-300">{activeExportJob.error}</p>
+            )}
             <div className="mt-3 flex gap-2">
               {activeExportJob.status === "RENDERING" && (
                 <Ghost
@@ -913,13 +1294,19 @@ export function EditorScreen(props: {
                 </Ghost>
               )}
               {activeExportJob.status === "COMPLETED" && activeExportJob.downloadBlobUrl && (
-                <a
-                  href={activeExportJob.downloadBlobUrl}
-                  download={activeExportJob.outputPath || "VexEdit_Video.mp4"}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white shadow-lg transition active:scale-95"
-                >
-                  <Ic.IcCheck size={18} /> Download {activeExportJob.outputPath}
-                </a>
+                <div className="w-full space-y-2">
+                  <Primary className="w-full !bg-emerald-600" disabled={savingExport} onClick={saveExportToDevice}>
+                    <Ic.IcCheck size={18} /> {savingExport ? "Saving…" : "Save to device"}
+                  </Primary>
+                  {saveMessage && <p className="text-center text-[11px] text-zinc-400">{saveMessage}</p>}
+                  <a
+                    href={activeExportJob.downloadBlobUrl}
+                    download={activeExportJob.outputPath || "VexEdit_Export.webm"}
+                    className="inline-flex w-full items-center justify-center rounded-xl bg-white/8 px-3 py-2 text-xs text-zinc-300"
+                  >
+                    Download file
+                  </a>
+                </div>
               )}
             </div>
           </div>
@@ -958,22 +1345,66 @@ function addPresetMedia(props: any, project: Project, m: MediaAsset, at: number)
   });
 }
 
+function rebaseKeyframesAfterLeftTrim(
+  keyframes: ClipKeyframe[],
+  removedTimelineSeconds: number
+): ClipKeyframe[] {
+  const originalTime = Math.max(0, removedTimelineSeconds);
+  const properties = ["opacity", "scale", "x", "y", "rotation"] as const;
+  const boundary: ClipKeyframe = { time: 0 };
+
+  for (const property of properties) {
+    const points = keyframes
+      .filter((keyframe) => typeof keyframe[property] === "number")
+      .slice()
+      .sort((left, right) => left.time - right.time);
+    if (points.length === 0) continue;
+
+    let value = points[0][property] as number;
+    if (originalTime >= points[points.length - 1].time) {
+      value = points[points.length - 1][property] as number;
+    } else if (originalTime > points[0].time) {
+      for (let index = 0; index < points.length - 1; index++) {
+        const left = points[index];
+        const right = points[index + 1];
+        if (originalTime >= left.time && originalTime <= right.time) {
+          const ratio = (originalTime - left.time) / Math.max(0.000001, right.time - left.time);
+          value = (left[property] as number) + ((right[property] as number) - (left[property] as number)) * ratio;
+          break;
+        }
+      }
+    }
+    boundary[property] = value;
+  }
+
+  const shifted = keyframes
+    .map((keyframe) => ({ ...keyframe, time: keyframe.time - removedTimelineSeconds }))
+    .filter((keyframe) => keyframe.time > 0);
+  return [boundary, ...shifted].sort((left, right) => left.time - right.time);
+}
+
 function ClipView({
   clip,
+  mediaUrl,
+  locked = false,
   px,
   selected,
   height,
   onSelect,
   onDragStart,
   onDrag,
+  onDragEnd,
 }: {
   clip: Clip;
+  mediaUrl: string;
+  locked?: boolean;
   px: number;
   selected: boolean;
   height: number;
   onSelect: () => void;
-  onDragStart: (x: number) => void;
+  onDragStart: (mode: "move" | "left" | "right", x: number) => void;
   onDrag: (x: number) => void;
+  onDragEnd: () => void;
 }) {
   const bars = clip.type === "audio" ? waveBars(clip.id, 48) : [];
   return (
@@ -981,25 +1412,35 @@ function ClipView({
       onPointerDown={(e) => {
         e.stopPropagation();
         onSelect();
+        if (locked) return;
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-        onDragStart(e.clientX);
+        const handle = (e.target as HTMLElement).closest<HTMLElement>("[data-trim-edge]");
+        const edge = handle?.dataset.trimEdge;
+        onDragStart(edge === "left" || edge === "right" ? edge : "move", e.clientX);
       }}
       onPointerMove={(e) => {
         if (e.buttons !== 1) return;
         onDrag(e.clientX);
       }}
-      className={`absolute top-1 overflow-hidden rounded-[10px] ${
+      onPointerUp={onDragEnd}
+      onPointerCancel={onDragEnd}
+      className={`absolute top-1 overflow-hidden rounded-[10px] ${locked ? "cursor-not-allowed opacity-75" : ""} ${
         selected ? "ring-[2.5px] ring-violet-400" : "ring-1 ring-black/40"
       }`}
       style={{
         left: clip.start * px,
         width: Math.max(28, clip.duration * px),
         height,
+        touchAction: "none",
         background: clip.type === "audio" ? "#1b2430" : clip.type === "text" ? "#372c14" : "#1a1a22",
       }}
     >
-      {clip.thumb && clip.type !== "audio" ? (
-        <img src={clip.thumb} alt="" className="h-full w-full object-cover" draggable={false} />
+      {(clip.thumb || clip.src) && clip.type !== "audio" ? (
+        clip.type === "video" && clip.sourceMimeType?.startsWith("video/") ? (
+          <video src={mediaUrl} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+        ) : (
+          <img src={mediaUrl} alt="" className="h-full w-full object-cover" draggable={false} />
+        )
       ) : clip.type === "audio" ? (
         <div className="flex h-full items-end gap-px px-1 py-1">
           {bars.map((b, i) => (
@@ -1012,6 +1453,31 @@ function ClipView({
         </div>
       ) : (
         <div className="h-full w-full bg-violet-800/40" />
+      )}
+      {clip.keyframes && clip.keyframes.length > 0 && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-1.5">
+          {clip.keyframes.map((keyframe, index) => (
+            <div
+              key={index}
+              className="absolute top-0 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-amber-300 shadow"
+              style={{ left: `${Math.max(0, Math.min(100, (keyframe.time / Math.max(0.01, clip.duration)) * 100))}%` }}
+            />
+          ))}
+        </div>
+      )}
+      {selected && !locked && (
+        <>
+          <div
+            data-trim-edge="left"
+            className="absolute inset-y-0 left-0 z-20 w-3 cursor-ew-resize border-r-2 border-white/90 bg-violet-400/80"
+            style={{ touchAction: "none" }}
+          />
+          <div
+            data-trim-edge="right"
+            className="absolute inset-y-0 right-0 z-20 w-3 cursor-ew-resize border-l-2 border-white/90 bg-violet-400/80"
+            style={{ touchAction: "none" }}
+          />
+        </>
       )}
     </div>
   );

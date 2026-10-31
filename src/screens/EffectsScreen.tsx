@@ -1,17 +1,24 @@
-import { useState } from "react";
-import type { Preset } from "../lib/types";
+import { useEffect, useState } from "react";
+import type { Preset, Project, Clip } from "../lib/types";
 import { VIDEO_EFFECTS, AUDIO_EFFECTS } from "../lib/mock";
+import { resolveMediaSource } from "../lib/mediaStore";
 import * as Ic from "../components/icons";
 import { Slider, Input, Primary, Ghost } from "../components/ui";
 
 export function EffectsScreen({
   tr,
+  project,
+  updateClip,
+  showToast,
   presets,
   savePreset,
   deletePreset,
   onBack,
 }: {
   tr: (k: string) => string;
+  project: Project | null;
+  updateClip: (projectId: string, clipId: string, patch: Partial<Clip>) => void;
+  showToast: (message: string) => void;
   presets: Preset[];
   savePreset: (effectId: string, name: string, params: Record<string, any>) => void;
   deletePreset: (id: string) => void;
@@ -26,6 +33,69 @@ export function EffectsScreen({
     return p;
   });
   const [name, setName] = useState("");
+  const videoClips = project?.clips.filter((clip) => clip.type === "video" || clip.type === "image") ?? [];
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(videoClips[0]?.id ?? null);
+  const selectedClip = videoClips.find((clip) => clip.id === selectedClipId) ?? null;
+  const [previewMediaUrl, setPreviewMediaUrl] = useState("");
+  useEffect(() => {
+    if (!videoClips.some((clip) => clip.id === selectedClipId)) {
+      setSelectedClipId(videoClips[0]?.id ?? null);
+    }
+  }, [project?.id, videoClips, selectedClipId]);
+  useEffect(() => {
+    let cancelled = false;
+    const source = selectedClip?.thumb || selectedClip?.src;
+    void resolveMediaSource(source).then((url) => {
+      if (!cancelled) setPreviewMediaUrl(url || "");
+    }).catch(() => {
+      if (!cancelled) setPreviewMediaUrl("");
+    });
+    return () => { cancelled = true; };
+  }, [selectedClip?.id, selectedClip?.src, selectedClip?.thumb]);
+  const canApply = true;
+
+  const applyEffect = () => {
+    if (!project || !selectedClip) {
+      showToast("Open a project and select a video or image clip first.");
+      return;
+    }
+    if (!canApply) {
+      showToast("This effect is not supported by the current render engine yet.");
+      return;
+    }
+    const patch: Partial<Clip> = {};
+    switch (id) {
+      case "fx.blur":
+        patch.blur = Math.max(0, Math.min(100, Number(params.amount ?? 0) * (Number(params.radius ?? 4) / 4)));
+        break;
+      case "fx.brightness":
+        patch.brightness = Number(params.value ?? 0);
+        break;
+      case "fx.contrast":
+        patch.contrast = Number(params.value ?? 0);
+        break;
+      case "fx.saturation":
+        patch.saturation = Number(params.value ?? 0);
+        break;
+      case "fx.hue":
+        patch.hue = Number(params.degrees ?? 0);
+        break;
+      case "fx.vignette":
+        patch.vignette = Number(params.amount ?? 0);
+        patch.vignetteFeather = Number(params.feather ?? 50);
+        break;
+      case "fx.chroma":
+        patch.chromaticAberration = Number(params.amount ?? 0);
+        break;
+      case "fx.glitch":
+        patch.glitchIntensity = Number(params.intensity ?? 0);
+        patch.glitchSpeed = Number(params.speed ?? 1);
+        break;
+    }
+    if (Object.keys(patch).length === 0) return;
+    updateClip(project.id, selectedClip.id, patch);
+    showToast(`${eff.name} applied to ${selectedClip.name}`);
+  };
 
   const pick = (nid: string) => {
     setId(nid);
@@ -57,7 +127,24 @@ export function EffectsScreen({
           ))}
         </div>
         <div className="mt-4 overflow-hidden rounded-2xl bg-[#1c1c22] ring-1 ring-white/6">
-          <img src="/images/preview-car.jpg" alt="" className="aspect-video w-full object-cover" style={{ filter: `saturate(${1 + (Number(params.value || params.amount || 0) / 200)})` }} />
+          {selectedClip?.type === "video" && selectedClip.sourceMimeType?.startsWith("video/") && previewMediaUrl ? (
+            <video
+              src={previewMediaUrl}
+              autoPlay
+              loop
+              muted
+              playsInline
+              className="aspect-video w-full object-cover"
+              style={{ filter: previewFilter(id, params) }}
+            />
+          ) : (
+            <img
+              src={previewMediaUrl || "/images/preview-car.jpg"}
+              alt=""
+              className="aspect-video w-full object-cover"
+              style={{ filter: previewFilter(id, params) }}
+            />
+          )}
         </div>
         <div className="mt-4 rounded-2xl bg-[#1c1c22] p-4 ring-1 ring-white/6">
           {eff.params.map((p) => (
@@ -71,6 +158,21 @@ export function EffectsScreen({
               )}
             </div>
           ))}
+          <div className="mb-3">
+            <div className="mb-1 text-xs text-zinc-400">Apply to clip</div>
+            <select
+              value={selectedClipId ?? ""}
+              onChange={(event) => setSelectedClipId(event.target.value || null)}
+              className="w-full rounded-xl bg-[#121216] px-3 py-2 text-sm text-white outline-none"
+            >
+              <option value="">No clip selected</option>
+              {videoClips.map((clip) => <option key={clip.id} value={clip.id}>{clip.name}</option>)}
+            </select>
+            <Primary className="mt-2 w-full" disabled={!selectedClip || !canApply} onClick={applyEffect}>
+              Apply effect to clip
+            </Primary>
+
+          </div>
           <div className="mt-2 flex gap-2">
             <Input placeholder="Preset" value={name} onChange={(e: any) => setName(e.target.value)} />
             <Primary
@@ -87,10 +189,13 @@ export function EffectsScreen({
         <div className="mt-4 space-y-2">
           {presets.map((p) => (
             <div key={p.id} className="flex items-center justify-between rounded-2xl bg-[#1c1c22] px-3 py-2 ring-1 ring-white/6">
-              <div>
-                <div className="text-sm">{p.name}</div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm">{p.name}</div>
                 <div className="text-[11px] text-zinc-500">{p.effectId}</div>
               </div>
+              <Ghost onClick={() => { pick(p.effectId); setParams({ ...p.params }); }}>
+                Load
+              </Ghost>
               <Ghost danger onClick={() => deletePreset(p.id)}>
                 {tr("delete")}
               </Ghost>
@@ -100,4 +205,23 @@ export function EffectsScreen({
       </div>
     </div>
   );
+}
+
+function previewFilter(id: string, params: Record<string, any>): string {
+  switch (id) {
+    case "fx.blur": return `blur(${Math.max(0, Math.min(100, Number(params.amount || 0) * (Number(params.radius || 4) / 4))) * 0.15}px)`;
+    case "fx.brightness": return `brightness(${1 + Number(params.value || 0) / 100})`;
+    case "fx.contrast": return `contrast(${1 + Number(params.value || 0) / 100})`;
+    case "fx.saturation": return `saturate(${1 + Number(params.value || 0) / 100})`;
+    case "fx.hue": return `hue-rotate(${Number(params.degrees || 0)}deg)`;
+    case "fx.chroma": {
+      const amount = Math.max(0, Math.min(100, Number(params.amount || 0)));
+      return amount > 0 ? `drop-shadow(${amount * 0.06}px 0 rgba(255,40,100,.55)) drop-shadow(-${amount * 0.06}px 0 rgba(0,220,255,.55))` : "none";
+    }
+    case "fx.glitch": {
+      const intensity = Math.max(0, Math.min(100, Number(params.intensity || 0)));
+      return intensity > 0 ? `contrast(${1 + intensity / 160}) saturate(${1 + intensity / 120})` : "none";
+    }
+    default: return "none";
+  }
 }

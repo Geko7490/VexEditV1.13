@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   loadSettings, saveSettings, loadProjects, saveProjects, loadPresets, savePresets,
-  loadChains, saveChains, loadModuleState, saveModuleState, uid,
+  loadChains, saveChains, saveModuleState, uid,
 } from "./lib/store";
 import { t } from "./lib/i18n";
 import type {
-  SettingsState, Project, ModuleInfo, Preset, AudioChain, Clip,
-  RenderJob, PreviewSettings, ExportSettings, MediaAsset,
+  SettingsState, Project, ModuleInfo, Preset, AudioChain, Clip, ClipKeyframe,
+  PreviewSettings, ExportSettings, MediaAsset,
 } from "./lib/types";
 import { MODULE_CATALOG } from "./lib/mock";
 import { TRACKS } from "./lib/demo";
@@ -29,35 +29,65 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>(() => loadProjects());
   const [presets, setPresets] = useState<Preset[]>(() => loadPresets());
   const [chains, setChains] = useState<AudioChain[]>(() => loadChains());
-  const [modules, setModules] = useState<ModuleInfo[]>(() => {
-    const saved = loadModuleState();
-    if (saved && Array.isArray(saved)) {
-      return MODULE_CATALOG.map((m) => {
-        const s = saved.find((x: any) => x.id === m.id);
-        return s ? { ...m, ...s, status: s.status ?? m.status } : { ...m };
-      });
-    }
-    return MODULE_CATALOG.map((m) => ({ ...m }));
-  });
+  const [modules] = useState<ModuleInfo[]>(() =>
+    // Previous versions simulated module downloads. Reset those fake states;
+    // the real SDK-backed module installer is intentionally deferred.
+    MODULE_CATALOG.map((module) => ({
+      ...module,
+      status: "not_installed",
+      progress: 0,
+      downloadedBytes: 0,
+      totalBytes: module.downloadSize,
+      speed: 0,
+      eta: 0,
+      error: undefined,
+      installedAt: undefined,
+    }))
+  );
   const [tab, setTab] = useState<Tab>("home");
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [onboardingStep, setOnboardingStep] = useState(0);
-  const [renderJobs, setRenderJobs] = useState<RenderJob[]>([]);
   const [online, setOnline] = useState(navigator.onLine);
   const [savedFlag, setSavedFlag] = useState(true);
   const [clock, setClock] = useState(() => new Date());
-  const renderTimers = useRef<Record<string, any>>({});
+  const editHistoryTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const activeEditHistory = useRef<Set<string>>(new Set());
 
   const lang = settings.lang;
   const tr = (k: string) => t(lang, k);
 
   useEffect(() => { saveSettings(settings); }, [settings]);
-  useEffect(() => { saveProjects(projects); setSavedFlag(true); }, [projects]);
+  useEffect(() => {
+    setSavedFlag(false);
+    const saveTimer = window.setTimeout(() => {
+      saveProjects(projects);
+      setSavedFlag(true);
+    }, 350);
+    return () => window.clearTimeout(saveTimer);
+  }, [projects]);
   useEffect(() => { savePresets(presets); }, [presets]);
   useEffect(() => { saveChains(chains); }, [chains]);
   useEffect(() => { saveModuleState(modules); }, [modules]);
+
+  useEffect(() => () => {
+    Object.values(editHistoryTimers.current).forEach((timer) => clearTimeout(timer));
+  }, []);
+
+  useEffect(() => {
+    const handleAndroidBack = () => {
+      if (overlay !== null) {
+        setOverlay(null);
+      } else if (tab !== "home") {
+        setTab("home");
+      } else {
+        (window as any).VexEditAndroid?.finishApp?.();
+      }
+    };
+    window.addEventListener("vexedit:android-back", handleAndroidBack);
+    return () => window.removeEventListener("vexedit:android-back", handleAndroidBack);
+  }, [overlay, tab]);
 
   useEffect(() => {
     const on = () => setOnline(true);
@@ -117,8 +147,10 @@ export default function App() {
       prev.map((p) => {
         if (p.id !== id) return p;
         const snapshot = JSON.stringify({ clips: p.clips, tracks: p.tracks });
+        const currentHistory = p.history.slice(0, p.historyIndex + 1);
+        if (currentHistory[currentHistory.length - 1]?.snapshot === snapshot) return p;
         const entry = { label, snapshot, at: Date.now() };
-        const hist = p.history.slice(0, p.historyIndex + 1).concat(entry);
+        const hist = currentHistory.concat(entry);
         const trimmed = hist.length > 50 ? hist.slice(hist.length - 50) : hist;
         return { ...p, history: trimmed, historyIndex: trimmed.length - 1, updatedAt: Date.now() };
       })
@@ -155,16 +187,19 @@ export default function App() {
 
   const addClip = useCallback((projectId: string, clip: Omit<Clip, "id">) => {
     const c: Clip = { ...clip, id: uid("clip") };
+    pushHistory(projectId, "add:before");
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, clips: [...p.clips, c], updatedAt: Date.now(), cover: c.thumb || p.cover } : p)));
     pushHistory(projectId, "add");
   }, [pushHistory]);
 
   const deleteClip = useCallback((projectId: string, clipId: string) => {
+    pushHistory(projectId, "delete:before");
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, clips: p.clips.filter((c) => c.id !== clipId), updatedAt: Date.now() } : p)));
     pushHistory(projectId, "delete");
   }, [pushHistory]);
 
   const duplicateClip = useCallback((projectId: string, clipId: string) => {
+    pushHistory(projectId, "duplicate:before");
     setProjects((prev) =>
       prev.map((p) => {
         if (p.id !== projectId) return p;
@@ -178,15 +213,71 @@ export default function App() {
   }, [pushHistory]);
 
   const splitClip = useCallback((projectId: string, clipId: string, at: number) => {
+    pushHistory(projectId, "split:before");
     setProjects((prev) =>
       prev.map((p) => {
         if (p.id !== projectId) return p;
         const c = p.clips.find((x) => x.id === clipId);
         if (!c) return p;
         const rel = at - c.start;
-        if (rel <= 0.15 || rel >= c.duration - 0.15) return p;
-        const a: Clip = { ...c, duration: rel };
-        const b: Clip = { ...c, id: uid("clip"), start: c.start + rel, duration: c.duration - rel };
+        const frame = 1 / Math.max(1, p.fps || 30);
+        if (rel < frame || rel > c.duration - frame) return p;
+        const sourceIn = c.sourceIn ?? 0;
+        const sourceOut = c.sourceOut ?? c.sourceDuration ?? sourceIn + c.duration * (c.speed || 1);
+        const sourceSplit = Math.min(sourceOut, sourceIn + rel * (c.speed || 1));
+        const hasSourceBounds = c.sourceDuration != null || c.sourceOut != null || c.sourceIn != null;
+        let leftKeyframes: ClipKeyframe[] | undefined;
+        let rightKeyframes: ClipKeyframe[] | undefined;
+        if (c.keyframes?.length) {
+          const properties = ["opacity", "scale", "x", "y", "rotation"] as const;
+          const boundary: ClipKeyframe = { time: rel };
+          for (const property of properties) {
+            const points = c.keyframes
+              .filter((keyframe) => typeof keyframe[property] === "number")
+              .slice()
+              .sort((left, right) => left.time - right.time);
+            if (points.length === 0) continue;
+            let value = points[0][property] as number;
+            if (rel >= points[points.length - 1].time) {
+              value = points[points.length - 1][property] as number;
+            } else if (rel > points[0].time) {
+              for (let index = 0; index < points.length - 1; index++) {
+                const left = points[index];
+                const right = points[index + 1];
+                if (rel >= left.time && rel <= right.time) {
+                  const ratio = (rel - left.time) / Math.max(0.000001, right.time - left.time);
+                  value = (left[property] as number) + ((right[property] as number) - (left[property] as number)) * ratio;
+                  break;
+                }
+              }
+            }
+            boundary[property] = value;
+          }
+          leftKeyframes = [
+            ...c.keyframes.filter((keyframe) => keyframe.time < rel),
+            boundary,
+          ];
+          rightKeyframes = [
+            { ...boundary, time: 0 },
+            ...c.keyframes
+              .filter((keyframe) => keyframe.time > rel)
+              .map((keyframe) => ({ ...keyframe, time: keyframe.time - rel })),
+          ];
+        }
+        const a: Clip = {
+          ...c,
+          duration: rel,
+          ...(hasSourceBounds ? { sourceIn, sourceOut: sourceSplit } : {}),
+          ...(leftKeyframes ? { keyframes: leftKeyframes } : {}),
+        };
+        const b: Clip = {
+          ...c,
+          id: uid("clip"),
+          start: c.start + rel,
+          duration: c.duration - rel,
+          ...(hasSourceBounds ? { sourceIn: sourceSplit, sourceOut } : {}),
+          ...(rightKeyframes ? { keyframes: rightKeyframes } : {}),
+        };
         return { ...p, clips: p.clips.filter((x) => x.id !== clipId).concat(a, b), updatedAt: Date.now() };
       })
     );
@@ -194,134 +285,40 @@ export default function App() {
   }, [pushHistory]);
 
   const updateClip = useCallback((projectId: string, clipId: string, patch: Partial<Clip>) => {
+    const currentProject = projects.find((item) => item.id === projectId);
+    const currentClip = currentProject?.clips.find((item) => item.id === clipId);
+    if (!currentClip) return;
+    const hasChange = Object.entries(patch).some(([key, value]) =>
+      JSON.stringify((currentClip as any)[key]) !== JSON.stringify(value)
+    );
+    if (!hasChange) return;
+
+    // Group continuous slider/typing changes into one undo step.
+    if (!activeEditHistory.current.has(projectId)) {
+      pushHistory(projectId, "edit:before");
+      activeEditHistory.current.add(projectId);
+    }
     setSavedFlag(false);
-    setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, clips: p.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)), updatedAt: Date.now() } : p)));
-  }, []);
+    setProjects((prev) => prev.map((p) => (
+      p.id === projectId
+        ? { ...p, clips: p.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)), updatedAt: Date.now() }
+        : p
+    )));
 
-  const installModule = useCallback((id: string) => {
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "downloading", progress: 0, downloadedBytes: 0, speed: 0 } : m)));
-  }, []);
-
-  const moduleTimers = useRef<Record<string, any>>({});
-  useEffect(() => {
-    modules.forEach((m) => {
-      if (m.status === "downloading" && !moduleTimers.current[m.id]) {
-        let downloaded = m.downloadedBytes;
-        const total = m.totalBytes;
-        const timer = setInterval(() => {
-          downloaded += Math.floor(Math.random() * 380000 + 180000);
-          if (downloaded >= total) {
-            downloaded = total;
-            clearInterval(timer);
-            delete moduleTimers.current[m.id];
-            setModules((prev) => prev.map((x) => (x.id === m.id ? { ...x, status: "verifying", progress: 100, downloadedBytes: total, speed: 0, eta: 0 } : x)));
-            setTimeout(() => {
-              setModules((prev) => prev.map((x) => (x.id === m.id ? { ...x, status: "installing" } : x)));
-              setTimeout(() => {
-                setModules((prev) => prev.map((x) => (x.id === m.id ? { ...x, status: "installed", installedAt: Date.now(), progress: 100 } : x)));
-              }, 800);
-            }, 600);
-          } else {
-            const speed = Math.floor(Math.random() * 1800000 + 400000);
-            setModules((prev) => prev.map((x) => (x.id === m.id ? { ...x, downloadedBytes: downloaded, progress: (downloaded / total) * 100, speed, eta: (total - downloaded) / speed } : x)));
-          }
-        }, 250);
-        moduleTimers.current[m.id] = timer;
-      }
-    });
-  }, [modules]);
-
-  const pauseModule = useCallback((id: string) => {
-    const tm = moduleTimers.current[id];
-    if (tm) { clearInterval(tm); delete moduleTimers.current[id]; }
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "paused", speed: 0 } : m)));
-  }, []);
-  const resumeModule = useCallback((id: string) => {
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "downloading" } : m)));
-  }, []);
-  const cancelModule = useCallback((id: string) => {
-    const tm = moduleTimers.current[id];
-    if (tm) { clearInterval(tm); delete moduleTimers.current[id]; }
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "not_installed", progress: 0, downloadedBytes: 0, speed: 0, eta: 0 } : m)));
-  }, []);
-  const retryModule = useCallback((id: string) => {
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "downloading", error: undefined } : m)));
-  }, []);
-  const removeModule = useCallback((id: string) => {
-    const tm = moduleTimers.current[id];
-    if (tm) { clearInterval(tm); delete moduleTimers.current[id]; }
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "not_installed", progress: 0, downloadedBytes: 0, speed: 0, eta: 0, installedAt: undefined } : m)));
-  }, []);
-  const updateModule = useCallback((id: string) => {
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "downloading", progress: 0, downloadedBytes: 0 } : m)));
-  }, []);
+    const previousTimer = editHistoryTimers.current[projectId];
+    if (previousTimer) clearTimeout(previousTimer);
+    editHistoryTimers.current[projectId] = setTimeout(() => {
+      activeEditHistory.current.delete(projectId);
+      delete editHistoryTimers.current[projectId];
+      pushHistory(projectId, "edit");
+    }, 450);
+  }, [projects, pushHistory]);
 
   const savePreset = useCallback((effectId: string, name: string, params: Record<string, any>) => {
     setPresets((prev) => [{ id: uid("preset"), name, effectId, params, createdAt: Date.now() }, ...prev]);
     showToast(tr("savePreset"));
   }, [showToast, tr]);
   const deletePreset = useCallback((id: string) => setPresets((prev) => prev.filter((p) => p.id !== id)), []);
-
-  const startRender = useCallback((projectId: string) => {
-    const p = projects.find((x) => x.id === projectId);
-    if (!p) return;
-    const exp = settings.export;
-    const resMap: Record<string, string> = { "480p": "854x480", "720p": "1280x720", "1080p": "1920x1080", "2K": "2560x1440", "4K": "3840x2160" };
-    const dur = Math.max(5, p.clips.reduce((a, c) => Math.max(a, c.start + c.duration), 0));
-    const totalFrames = Math.round(exp.fps * dur);
-    const job: RenderJob = {
-      id: uid("render"),
-      projectId,
-      status: "PREPARING",
-      progress: 0,
-      eta: totalFrames / (exp.fps * 0.6),
-      speed: 0,
-      frame: 0,
-      totalFrames,
-      resolution: resMap[exp.resolution],
-      fps: exp.fps,
-      codec: exp.codec === "auto" ? "h264 (hw)" : exp.codec,
-      createdAt: Date.now(),
-    };
-    setRenderJobs((prev) => [job, ...prev]);
-    setTimeout(() => setRenderJobs((prev) => prev.map((j) => (j.id === job.id ? { ...j, status: "RENDERING" } : j))), 500);
-    let frame = 0;
-    const timer = setInterval(() => {
-      setRenderJobs((prev) => {
-        const j = prev.find((x) => x.id === job.id);
-        if (!j || j.status !== "RENDERING") return prev;
-        frame += Math.max(1, Math.floor(exp.fps / 3));
-        if (frame >= totalFrames) {
-          clearInterval(timer);
-          delete renderTimers.current[job.id];
-          return prev.map((x) => (x.id === job.id ? { ...x, frame: totalFrames, progress: 100, status: "FINALIZING", eta: 0, speed: exp.fps } : x));
-        }
-        return prev.map((x) => (x.id === job.id ? { ...x, frame, progress: (frame / totalFrames) * 100, eta: (totalFrames - frame) / (exp.fps * 0.8), speed: exp.fps * 0.8 } : x));
-      });
-    }, 280);
-    renderTimers.current[job.id] = timer;
-    setTimeout(() => {
-      setRenderJobs((prev) => prev.map((j) => (j.id === job.id && (j.status === "FINALIZING" || j.status === "RENDERING") ? { ...j, status: "COMPLETED", outputPath: `/exports/${projectId}.mp4`, progress: 100 } : j)));
-    }, Math.min(14000, 1800 + totalFrames * 8));
-  }, [projects, settings.export]);
-
-  const pauseRender = useCallback((id: string) => {
-    const tm = renderTimers.current[id];
-    if (tm) { clearInterval(tm); delete renderTimers.current[id]; }
-    setRenderJobs((prev) => prev.map((j) => (j.id === id && j.status === "RENDERING" ? { ...j, status: "PAUSED", pausedAt: Date.now() } : j)));
-  }, []);
-  const resumeRender = useCallback((id: string) => {
-    setRenderJobs((prev) => prev.map((j) => (j.id === id && j.status === "PAUSED" ? { ...j, status: "RENDERING" } : j)));
-  }, []);
-  const cancelRender = useCallback((id: string) => {
-    const tm = renderTimers.current[id];
-    if (tm) { clearInterval(tm); delete renderTimers.current[id]; }
-    setRenderJobs((prev) => prev.map((j) => (j.id === id ? { ...j, status: "CANCELLED" } : j)));
-  }, []);
-  const retryRender = useCallback((id: string) => {
-    const j = renderJobs.find((x) => x.id === id);
-    if (j) startRender(j.projectId);
-  }, [renderJobs, startRender]);
 
   const updatePreview = (patch: Partial<PreviewSettings>) => setSettings((s) => ({ ...s, preview: { ...s.preview, ...patch } }));
   const updateExport = (patch: Partial<ExportSettings>) => setSettings((s) => ({ ...s, export: { ...s.export, ...patch } }));
@@ -334,23 +331,35 @@ export default function App() {
   };
 
   const useAsset = (asset: MediaAsset) => {
-    if (!activeProjectId) {
-      if (projects[0]) setActiveProjectId(projects[0].id);
-    }
     const pid = activeProjectId || projects[0]?.id;
     if (!pid) {
       createProject();
+      showToast("Project created. Add the asset again to place it on the timeline.");
       return;
     }
+
+    // The bundled media library currently contains still-image previews, not
+    // actual video/audio source files. Never create a silent fake audio clip.
+    if (asset.type === "audio" && !asset.src) {
+      showToast("This library audio item is a preview only. Import a real audio file to use it.");
+      return;
+    }
+
+    const clipType: Clip["type"] = asset.src ? asset.type : "image";
     addClip(pid, {
-      track: asset.type === "audio" ? 3 : 2,
-      type: asset.type === "audio" ? "audio" : "video",
+      track: clipType === "audio" ? 3 : 2,
+      type: clipType,
       name: asset.name,
       start: 0,
       duration: asset.duration,
-      color: asset.type === "audio" ? "#3ee0c8" : "#8b67f7",
+      sourceDuration: asset.src && (clipType === "video" || clipType === "audio") ? asset.duration : undefined,
+      sourceIn: 0,
+      sourceOut: asset.src && (clipType === "video" || clipType === "audio") ? asset.duration : undefined,
+      color: clipType === "audio" ? "#3ee0c8" : "#8b67f7",
       opacity: 1, speed: 1, reversed: false, frozen: false, effects: [],
-      thumb: asset.thumb, volume: 1, x: 0, y: 0, scale: 1, rotation: 0, crop: 0,
+      src: asset.src,
+      thumb: asset.thumb,
+      volume: 1, x: 0, y: 0, scale: 1, rotation: 0, crop: 0,
     });
     setOverlay("editor");
     setActiveProjectId(pid);
@@ -358,13 +367,14 @@ export default function App() {
   };
 
   const showNav = overlay === null;
+  const isNativeAndroid = typeof window !== "undefined" && Boolean((window as any).VexEditAndroid?.isAvailable?.());
   const hh = clock.getHours().toString().padStart(2, "0");
   const mm = clock.getMinutes().toString().padStart(2, "0");
 
   return (
     <div className="flex min-h-[100dvh] items-center justify-center bg-[#050506]">
       <div className="relative flex h-[100dvh] w-full max-w-[430px] flex-col overflow-hidden bg-[#111114] text-white shadow-[0_0_80px_rgba(124,92,255,0.12)]">
-        {showNav && (
+        {showNav && !isNativeAndroid && (
           <div className="flex h-7 shrink-0 items-center justify-between px-5 text-[12px] font-medium text-zinc-200">
             <span>{hh}:{mm}</span>
             <div className="flex items-center gap-1.5 text-zinc-300">
@@ -405,18 +415,19 @@ export default function App() {
             <SettingsScreen
               tr={tr} settings={settings} setSettings={setSettings}
               updatePreview={updatePreview} updateExport={updateExport}
-              projects={projects} modules={modules} showToast={showToast}
+              projects={projects} modules={modules}
+              backupData={{ settings, projects, modules, presets, chains }}
+              showToast={showToast}
             />
           )}
 
           {overlay === "editor" && activeProject && (
             <EditorScreen
-              tr={tr} project={activeProject} settings={settings} saved={savedFlag} renderJobs={renderJobs}
-              onBack={() => setOverlay(null)} onUndo={undo} onRedo={redo}
+              tr={tr} project={activeProject} settings={settings} saved={savedFlag}
+              onBack={() => setOverlay(null)} onUndo={undo} onRedo={redo} pushHistory={pushHistory}
+              showToast={showToast}
               updateProject={updateProject} addClip={addClip} deleteClip={deleteClip}
               duplicateClip={duplicateClip} splitClip={splitClip} updateClip={updateClip}
-              startRender={startRender} pauseRender={pauseRender} resumeRender={resumeRender}
-              cancelRender={cancelRender} retryRender={retryRender}
               updatePreview={updatePreview} updateExport={updateExport}
             />
           )}
@@ -428,16 +439,32 @@ export default function App() {
             </div>
           )}
           {overlay === "audio" && (
-            <AudioScreen tr={tr} chains={chains} setChains={setChains} savePreset={savePreset} onBack={() => setOverlay(null)} />
+            <AudioScreen
+              tr={tr}
+              project={activeProject || projects[0] || null}
+              updateClip={updateClip}
+              showToast={showToast}
+              chains={chains}
+              setChains={setChains}
+              savePreset={savePreset}
+              onBack={() => setOverlay(null)}
+            />
           )}
           {overlay === "effects" && (
-            <EffectsScreen tr={tr} presets={presets} savePreset={savePreset} deletePreset={deletePreset} onBack={() => setOverlay(null)} />
+            <EffectsScreen
+              tr={tr}
+              project={activeProject || projects[0] || null}
+              updateClip={updateClip}
+              showToast={showToast}
+              presets={presets}
+              savePreset={savePreset}
+              deletePreset={deletePreset}
+              onBack={() => setOverlay(null)}
+            />
           )}
           {overlay === "modules" && (
             <ModulesScreen
               tr={tr} modules={modules} online={online}
-              installModule={installModule} pauseModule={pauseModule} resumeModule={resumeModule}
-              cancelModule={cancelModule} retryModule={retryModule} removeModule={removeModule} updateModule={updateModule}
               onBack={() => setOverlay(null)}
             />
           )}

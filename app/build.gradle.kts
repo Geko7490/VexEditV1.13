@@ -4,6 +4,46 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val npmExecutable = if (System.getProperty("os.name").lowercase().contains("windows")) "npm.cmd" else "npm"
+val webAssetsDirectory = layout.projectDirectory.dir("src/main/assets")
+
+// Build the existing React editor and package the complete Vite output into the APK.
+// This makes the app launch offline instead of showing a separate placeholder screen.
+tasks.register("buildWebEditor") {
+    inputs.files(
+        rootProject.fileTree("src"),
+        rootProject.fileTree("public"),
+        rootProject.file("index.html"),
+        rootProject.file("package.json"),
+        rootProject.file("package-lock.json"),
+        rootProject.file("vite.config.ts"),
+        rootProject.file("tsconfig.json")
+    )
+    outputs.dir(webAssetsDirectory)
+
+    doLast {
+        exec {
+            workingDir(rootProject.projectDir)
+            commandLine(npmExecutable, "ci")
+        }
+        exec {
+            workingDir(rootProject.projectDir)
+            commandLine(npmExecutable, "run", "build")
+        }
+        copy {
+            from(rootProject.file("dist"))
+            into(webAssetsDirectory)
+        }
+        check(file("src/main/assets/index.html").isFile) {
+            "VexEdit web editor build did not produce app/src/main/assets/index.html"
+        }
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("buildWebEditor")
+}
+
 android {
     namespace = "com.vexedit.studio"
     compileSdk = 34
@@ -12,8 +52,8 @@ android {
         applicationId = "com.vexedit.studio"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -24,7 +64,6 @@ android {
         getByName("release") {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signing configured via GitHub Secrets in CI
         }
     }
 
@@ -51,7 +90,8 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
     implementation(composeBom)
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
+    implementation("androidx.activity:activity-ktx:1.9.0")
+    implementation("androidx.webkit:webkit:1.11.0")
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")

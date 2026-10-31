@@ -1,4 +1,5 @@
-import type { Project, Clip, ExportSettings } from "./types";
+import type { Project, Clip, ExportSettings, AudioEffectInstance } from "./types";
+import { resolveMediaSource } from "./mediaStore";
 
 // In-memory media cache for loaded images and videos
 const imageCache: Map<string, HTMLImageElement> = new Map();
@@ -10,23 +11,274 @@ export function getCachedImage(url: string): HTMLImageElement {
   }
   const img = new Image();
   img.crossOrigin = "anonymous";
+  img.addEventListener("load", () => {
+    if (typeof window !== "undefined") window.dispatchEvent(new Event("vexedit:media-frame"));
+  }, { once: true });
   img.src = url;
   imageCache.set(url, img);
   return img;
 }
 
 export function getCachedVideo(url: string): HTMLVideoElement {
-  if (videoCache.has(url)) {
-    return videoCache.get(url)!;
+  const cached = videoCache.get(url);
+  if (cached) return cached;
+
+  const video = document.createElement("video");
+  video.crossOrigin = "anonymous";
+  video.src = url;
+  video.muted = false;
+  video.volume = 1;
+  video.playsInline = true;
+  video.preload = "auto";
+  video.setAttribute("playsinline", "");
+  const notifyFrameReady = () => {
+    if (typeof window !== "undefined") window.dispatchEvent(new Event("vexedit:media-frame"));
+  };
+  video.addEventListener("loadeddata", notifyFrameReady, { once: true });
+  video.addEventListener("seeked", notifyFrameReady);
+  video.addEventListener("error", notifyFrameReady, { once: true });
+  videoCache.set(url, video);
+  return video;
+}
+
+const audioCache: Map<string, HTMLAudioElement> = new Map();
+let previewAudioContext: AudioContext | null = null;
+const audioNodeCache = new WeakMap<HTMLMediaElement, {
+  gain: GainNode;
+  panner: StereoPannerNode;
+  effectNodes: AudioNode[];
+  effectsSignature: string;
+}>();
+
+export function createAudioEffectNodes(
+  context: BaseAudioContext,
+  effects: AudioEffectInstance[]
+): AudioNode[] {
+  const nodes: AudioNode[] = [];
+  for (const effect of effects) {
+    const params = effect.params || {};
+    switch (effect.id) {
+      case "afx.eq": {
+        const low = context.createBiquadFilter();
+        low.type = "lowshelf";
+        low.frequency.value = 120;
+        low.gain.value = Number(params.low ?? 0);
+        const mid = context.createBiquadFilter();
+        mid.type = "peaking";
+        mid.frequency.value = 1000;
+        mid.Q.value = 1;
+        mid.gain.value = Number(params.mid ?? 0);
+        const high = context.createBiquadFilter();
+        high.type = "highshelf";
+        high.frequency.value = 8000;
+        high.gain.value = Number(params.high ?? 0);
+        nodes.push(low, mid, high);
+        break;
+      }
+      case "afx.compressor": {
+        const compressor = context.createDynamicsCompressor();
+        compressor.threshold.value = Number(params.threshold ?? -20);
+        compressor.ratio.value = Number(params.ratio ?? 4);
+        compressor.attack.value = Number(params.attack ?? 10) / 1000;
+        compressor.release.value = Number(params.release ?? 100) / 1000;
+        nodes.push(compressor);
+        break;
+      }
+      case "afx.limiter": {
+        const limiter = context.createDynamicsCompressor();
+        limiter.threshold.value = Number(params.ceiling ?? -1);
+        limiter.ratio.value = 20;
+        limiter.attack.value = 0.003;
+        limiter.release.value = 0.05;
+        nodes.push(limiter);
+        break;
+      }
+      case "afx.noisegate": {
+        const gate = context.createDynamicsCompressor();
+        gate.threshold.value = Number(params.threshold ?? -40);
+        gate.ratio.value = 20;
+        gate.attack.value = 0.003;
+        gate.release.value = Number(params.release ?? 100) / 1000;
+        nodes.push(gate);
+        break;
+      }
+      case "afx.distortion": {
+        const shaper = context.createWaveShaper();
+        const amount = Math.max(0, Math.min(100, Number(params.amount ?? 0)));
+        const curve = new Float32Array(44100);
+        const drive = amount * 4;
+        for (let index = 0; index < curve.length; index++) {
+          const value = (index * 2) / (curve.length - 1) - 1;
+          curve[index] = drive === 0
+            ? value
+            : ((3 + drive) * value * 20 * (Math.PI / 180)) /
+              (Math.PI + drive * Math.abs(value));
+        }
+        shaper.curve = curve;
+        shaper.oversample = "4x";
+        nodes.push(shaper);
+        break;
+      }
+      case "afx.delay": {
+        const input = context.createGain();
+        const output = context.createGain();
+        const dry = context.createGain();
+        const wet = context.createGain();
+        const delay = context.createDelay(2);
+        const feedback = context.createGain();
+        delay.delayTime.value = Math.max(0.001, Math.min(2, Number(params.time ?? 250) / 1000));
+        feedback.gain.value = Math.max(0, Math.min(0.95, Number(params.feedback ?? 30) / 100));
+        const mix = Math.max(0, Math.min(1, Number(params.mix ?? 25) / 100));
+        dry.gain.value = 1 - mix;
+        wet.gain.value = mix;
+        input.connect(dry);
+        dry.connect(output);
+        input.connect(delay);
+        delay.connect(feedback);
+        feedback.connect(delay);
+        delay.connect(wet);
+        wet.connect(output);
+        (input as any).__outputNode = output;
+        (input as any).__ownedNodes = [output, dry, wet, delay, feedback];
+        nodes.push(input);
+        break;
+      }
+      case "afx.reverb": {
+        const input = context.createGain();
+        const output = context.createGain();
+        const dry = context.createGain();
+        const wet = context.createGain();
+        const convolver = context.createConvolver();
+        const decay = Math.max(0.1, Math.min(10, Number(params.decay ?? 2)));
+        const length = Math.max(1, Math.floor(context.sampleRate * decay));
+        const impulse = context.createBuffer(2, length, context.sampleRate);
+        for (let channel = 0; channel < 2; channel++) {
+          const data = impulse.getChannelData(channel);
+          for (let index = 0; index < length; index++) {
+            const fade = Math.pow(1 - index / length, 2 + decay * 0.35);
+            data[index] = (Math.random() * 2 - 1) * fade;
+          }
+        }
+        convolver.buffer = impulse;
+        const mix = Math.max(0, Math.min(1, Number(params.mix ?? 20) / 100));
+        dry.gain.value = 1 - mix;
+        wet.gain.value = mix;
+        input.connect(dry);
+        dry.connect(output);
+        input.connect(convolver);
+        convolver.connect(wet);
+        wet.connect(output);
+        (input as any).__outputNode = output;
+        (input as any).__ownedNodes = [output, dry, wet, convolver];
+        nodes.push(input);
+        break;
+      }
+    }
   }
-  const vid = document.createElement("video");
-  vid.crossOrigin = "anonymous";
-  vid.src = url;
-  vid.muted = true;
-  vid.playsInline = true;
-  vid.preload = "auto";
-  videoCache.set(url, vid);
-  return vid;
+  return nodes;
+}
+
+function ensureMediaAudioNodes(media: HTMLMediaElement, effects: AudioEffectInstance[] = []) {
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioContextClass) return null;
+  previewAudioContext ||= new AudioContextClass();
+  let nodes = audioNodeCache.get(media);
+  if (!nodes) {
+    const source = previewAudioContext.createMediaElementSource(media);
+    const gain = previewAudioContext.createGain();
+    const panner = previewAudioContext.createStereoPanner();
+    source.connect(gain);
+    panner.connect(previewAudioContext.destination);
+    nodes = { gain, panner, effectNodes: [], effectsSignature: "" };
+    audioNodeCache.set(media, nodes);
+  }
+
+  const signature = JSON.stringify(effects);
+  if (nodes.effectsSignature !== signature) {
+    nodes.gain.disconnect();
+    nodes.effectNodes.forEach((node) => {
+      node.disconnect();
+      const owned = (node as any).__ownedNodes as AudioNode[] | undefined;
+      owned?.forEach((ownedNode) => ownedNode.disconnect());
+    });
+    const nextNodes = createAudioEffectNodes(previewAudioContext, effects);
+    let previous: AudioNode = nodes.gain;
+    for (const node of nextNodes) {
+      previous.connect(node);
+      previous = (node as any).__outputNode || node;
+    }
+    previous.connect(nodes.panner);
+    nodes.effectNodes = nextNodes;
+    nodes.effectsSignature = signature;
+  }
+  return nodes;
+}
+
+export async function resumePreviewAudio(): Promise<void> {
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioContextClass) return;
+  previewAudioContext ||= new AudioContextClass();
+  if (previewAudioContext.state === "suspended") {
+    await previewAudioContext.resume();
+  }
+}
+
+function configurePreviewAudio(
+  media: HTMLMediaElement,
+  volume: number,
+  pan: number,
+  effects: AudioEffectInstance[] = []
+) {
+  try {
+    const nodes = ensureMediaAudioNodes(media, effects);
+    if (!nodes) {
+      media.volume = Math.max(0, Math.min(1, volume));
+      return;
+    }
+    nodes.gain.gain.value = Math.max(0, Math.min(4, volume));
+    nodes.panner.pan.value = Math.max(-1, Math.min(1, pan));
+    media.volume = 1;
+    if (previewAudioContext?.state === "suspended") {
+      void previewAudioContext.resume().catch(() => undefined);
+    }
+  } catch {
+    media.volume = Math.max(0, Math.min(1, volume));
+  }
+}
+
+export function getCachedAudio(url: string): HTMLAudioElement {
+  const cached = audioCache.get(url);
+  if (cached) return cached;
+  const audio = document.createElement("audio");
+  audio.crossOrigin = "anonymous";
+  audio.src = url;
+  audio.preload = "auto";
+  audioCache.set(url, audio);
+  return audio;
+}
+
+type AnimatedProperty = "opacity" | "scale" | "x" | "y" | "rotation";
+
+function getAnimatedValue(clip: Clip, property: AnimatedProperty, time: number, fallback: number): number {
+  const points = (clip.keyframes || [])
+    .filter((keyframe) => typeof keyframe[property] === "number")
+    .sort((a, b) => a.time - b.time);
+  if (points.length === 0) return fallback;
+  if (time <= points[0].time) return points[0][property] as number;
+  if (time >= points[points.length - 1].time) return points[points.length - 1][property] as number;
+
+  for (let index = 0; index < points.length - 1; index++) {
+    const left = points[index];
+    const right = points[index + 1];
+    if (time >= left.time && time <= right.time) {
+      const span = Math.max(0.000001, right.time - left.time);
+      const progress = (time - left.time) / span;
+      const from = left[property] as number;
+      const to = right[property] as number;
+      return from + (to - from) * progress;
+    }
+  }
+  return fallback;
 }
 
 // Convert ColorFilterPreset to CSS filter string
@@ -44,6 +296,9 @@ export function getFilterStyle(clip: Clip): string {
 
   if ((clip.blur ?? 0) > 0) {
     parts.push(`blur(${clip.blur! * 0.15}px)`);
+  }
+  if ((clip.hue ?? 0) !== 0) {
+    parts.push(`hue-rotate(${clip.hue}deg)`);
   }
 
   // Preset LUTs
@@ -78,10 +333,11 @@ export function renderCompositeFrame(
   height: number,
   project: Project,
   timeSec: number,
-  _options: {
+  options: {
     selectedClipId?: string | null;
     showGrid?: boolean;
     previewQuality?: "fast" | "balanced" | "full";
+    playing?: boolean;
   } = {}
 ) {
   // Clear canvas background
@@ -91,8 +347,65 @@ export function renderCompositeFrame(
 
   // Active clips at current time
   const activeClips = project.clips
-    .filter((c) => timeSec >= c.start && timeSec < c.start + c.duration)
-    .sort((a, b) => a.track - b.track);
+    .filter((clip) => timeSec >= clip.start && timeSec < clip.start + clip.duration)
+    .sort((a, b) => {
+      const aTrack = project.tracks.find((track) => track.id === a.track);
+      const bTrack = project.tracks.find((track) => track.id === b.track);
+      const priority = (track: typeof aTrack) =>
+        track?.type === "video" ? 0 : track?.type === "overlay" ? 1 : 2;
+      return priority(aTrack) - priority(bTrack) || a.track - b.track;
+    });
+
+  const activeVideoUrls = new Set(
+    activeClips
+      .filter((clip) => clip.type === "video" && clip.src)
+      .map((clip) => clip.src as string)
+  );
+  const activeAudioClips = activeClips.filter((clip) => clip.type === "audio" && clip.src);
+  const activeAudioUrls = new Set(activeAudioClips.map((clip) => clip.src as string));
+
+  for (const [url, cachedVideo] of videoCache) {
+    if (!activeVideoUrls.has(url) && !cachedVideo.paused) cachedVideo.pause();
+  }
+  for (const [url, cachedAudio] of audioCache) {
+    if (!activeAudioUrls.has(url) && !cachedAudio.paused) cachedAudio.pause();
+  }
+
+  // Synchronize audio-only clips with the editor playhead.
+  for (const clip of activeAudioClips) {
+    const track = project.tracks.find((item) => item.id === clip.track);
+    const audio = getCachedAudio(clip.src as string);
+    const sourceIn = Math.max(0, clip.sourceIn ?? 0);
+    const sourceEnd = clip.sourceOut ?? clip.sourceDuration ?? sourceIn + clip.duration * (clip.speed || 1);
+    const relativeSourceTime = (timeSec - clip.start) * (clip.speed || 1);
+    const sourceTime = clip.reversed
+      ? Math.max(sourceIn, sourceEnd - relativeSourceTime)
+      : sourceIn + (clip.frozen ? 0 : relativeSourceTime);
+    if (track?.muted) {
+      audio.pause();
+      continue;
+    }
+    if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      if (options.playing && !clip.frozen && !clip.reversed) {
+        if (Math.abs(audio.currentTime - sourceTime) > 0.5 && !audio.seeking) {
+          try { audio.currentTime = sourceTime; } catch { /* wait for metadata */ }
+        }
+        audio.playbackRate = Math.max(0.1, Math.min(3, clip.speed || 1));
+        configurePreviewAudio(
+          audio,
+          (clip.volume ?? 1) * (track?.volume ?? 1),
+          clip.pan ?? 0,
+          clip.audioEffects ?? []
+        );
+        if (audio.paused && !audio.ended) void audio.play().catch(() => undefined);
+      } else {
+        if (!audio.paused) audio.pause();
+        if (!audio.seeking && Math.abs(audio.currentTime - sourceTime) > 0.025) {
+          try { audio.currentTime = sourceTime; } catch { /* wait for metadata */ }
+        }
+      }
+    }
+  }
 
   // Render tracks
   for (const clip of activeClips) {
@@ -103,11 +416,24 @@ export function renderCompositeFrame(
     if (track?.muted) continue;
 
     const relTime = (timeSec - clip.start) * clip.speed;
+    const sourceIn = Math.max(0, clip.sourceIn ?? 0);
+    const sourceEnd = clip.sourceOut ?? clip.sourceDuration ?? sourceIn + clip.duration * (clip.speed || 1);
+    const sourceTime = clip.reversed
+      ? Math.max(sourceIn, sourceEnd - relTime)
+      : sourceIn + (clip.frozen ? 0 : relTime);
 
     ctx.save();
 
+    // Interpolate animated transform values at the clip-local timeline time.
+    const localTime = timeSec - clip.start;
+    const animatedOpacity = getAnimatedValue(clip, "opacity", localTime, clip.opacity ?? 1);
+    const animatedScale = getAnimatedValue(clip, "scale", localTime, clip.scale ?? 1);
+    const animatedX = getAnimatedValue(clip, "x", localTime, clip.x ?? 0);
+    const animatedY = getAnimatedValue(clip, "y", localTime, clip.y ?? 0);
+    const animatedRotation = getAnimatedValue(clip, "rotation", localTime, clip.rotation ?? 0);
+
     // Opacity & Global Alpha
-    let alpha = clip.opacity ?? 1.0;
+    let alpha = animatedOpacity;
 
     // Transition calculations (e.g. fade in/out)
     if (clip.transition === "fade") {
@@ -117,18 +443,27 @@ export function renderCompositeFrame(
       } else if (relTime > clip.duration - fadeDur) {
         alpha *= ((clip.duration - relTime) / fadeDur);
       }
+    } else if (clip.transition === "dissolve" && relTime < 0.7) {
+      alpha *= Math.max(0, Math.min(1, relTime / 0.7));
     }
     ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
 
     // Transformations
-    const centerX = width / 2 + (clip.x ?? 0) * (width / 100);
-    const centerY = height / 2 + (clip.y ?? 0) * (height / 100);
+    const centerX = width / 2 + animatedX * (width / 100);
+    const centerY = height / 2 + animatedY * (height / 100);
 
     ctx.translate(centerX, centerY);
-    if (clip.rotation) {
-      ctx.rotate((clip.rotation * Math.PI) / 180);
+    if (animatedRotation) {
+      ctx.rotate((animatedRotation * Math.PI) / 180);
     }
-    const scale = clip.scale ?? 1.0;
+    const zoomProgress = clip.transition === "zoom"
+      ? Math.max(0, Math.min(1, relTime / 0.7))
+      : 1;
+    const transitionScale = clip.transition === "zoom" && relTime < 0.7
+      ? 1.18 - 0.18 * zoomProgress
+      : 1;
+    const cropScale = 1 + Math.max(0, Math.min(100, clip.crop ?? 0)) / 100;
+    const scale = animatedScale * transitionScale * cropScale;
     ctx.scale(scale, scale);
 
     if (clip.type === "text") {
@@ -154,7 +489,36 @@ export function renderCompositeFrame(
     } else {
       // Draw Image / Video Clip
       const imgUrl = clip.src || clip.thumb || "/images/preview-car.jpg";
-      const img = getCachedImage(imgUrl);
+      const isVideo = clip.type === "video" && (
+        clip.sourceMimeType?.startsWith("video/") === true ||
+        imgUrl.startsWith("blob:") ||
+        /\.(mp4|m4v|mov|webm|mkv|3gp)(?:$|[?#])/i.test(imgUrl)
+      );
+      const video = isVideo ? getCachedVideo(imgUrl) : null;
+      const img = isVideo ? null : getCachedImage(imgUrl);
+
+      if (video) {
+        // Keep the HTML video element as the decoder. Canvas receives decoded
+        // frames instead of trying to draw an HTMLImageElement backed by an MP4.
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+          if (options.playing && !clip.frozen && !clip.reversed) {
+            const drift = Math.abs(video.currentTime - sourceTime);
+            if (drift > 0.45 && !video.seeking) {
+              try { video.currentTime = sourceTime; } catch { /* wait for metadata */ }
+            }
+            video.playbackRate = Math.max(0.1, Math.min(3, clip.speed || 1));
+            configurePreviewAudio(video, (clip.volume ?? 1) * (track?.volume ?? 1), 0);
+            if (video.paused && !video.ended) {
+              void video.play().catch(() => undefined);
+            }
+          } else {
+            if (!video.paused) video.pause();
+            if (!video.seeking && Math.abs(video.currentTime - sourceTime) > 0.025) {
+              try { video.currentTime = sourceTime; } catch { /* media may still be loading */ }
+            }
+          }
+        }
+      }
 
       // Apply Filter
       const filterStr = getFilterStyle(clip);
@@ -175,21 +539,70 @@ export function renderCompositeFrame(
         ctx.clip();
       }
 
-      if (img.complete && img.naturalWidth > 0) {
-        ctx.drawImage(img, drawX, drawY, drawW, drawH);
+      const mediaReady = video
+        ? video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0
+        : !!img && img.complete && img.naturalWidth > 0;
+      if (mediaReady) {
+        ctx.drawImage((video || img) as CanvasImageSource, drawX, drawY, drawW, drawH);
       } else {
-        // Fallback procedural visual
+        // Keep the preview informative while the decoder loads or when the
+        // device cannot decode the selected source.
         ctx.fillStyle = clip.color || "#8b67f7";
         ctx.fillRect(drawX, drawY, drawW, drawH);
         ctx.fillStyle = "#ffffff";
         ctx.font = `${Math.round(height * 0.05)}px sans-serif`;
         ctx.textAlign = "center";
-        ctx.fillText(clip.name, 0, 0);
+        const status = video?.error ? "Unsupported video format" : "Loading media…";
+        ctx.fillText(status, 0, 0);
+      }
+
+      // Lightweight real-time chromatic aberration. Two tinted source
+      // passes create separated color fringes without expensive pixel readback.
+      if (mediaReady && (clip.chromaticAberration ?? 0) > 0) {
+        const amount = Math.max(0, Math.min(100, clip.chromaticAberration ?? 0));
+        const offset = Math.max(1, (width / 720) * amount * 0.035);
+        const originalFilter = ctx.filter;
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        ctx.globalAlpha = Math.min(0.5, amount / 180);
+        ctx.filter = "sepia(1) saturate(8) hue-rotate(300deg)";
+        ctx.drawImage((video || img) as CanvasImageSource, drawX + offset, drawY, drawW, drawH);
+        ctx.filter = "sepia(1) saturate(8) hue-rotate(165deg)";
+        ctx.drawImage((video || img) as CanvasImageSource, drawX - offset, drawY, drawW, drawH);
+        ctx.filter = originalFilter;
+        ctx.restore();
+      }
+
+      // Time-deterministic horizontal displacement bands for a real glitch
+      // effect that stays stable for each rendered frame in both preview/export.
+      if (mediaReady && (clip.glitchIntensity ?? 0) > 0) {
+        const intensity = Math.max(0, Math.min(100, clip.glitchIntensity ?? 0));
+        const speed = Math.max(0.1, Math.min(5, clip.glitchSpeed ?? 1));
+        const bands = 3 + Math.ceil(intensity / 18);
+        const frameSeed = Math.floor(timeSec * speed * 18);
+        const maxOffset = (width * intensity) / 1800;
+        for (let band = 0; band < bands; band++) {
+          const phase = (frameSeed * 1.73 + band * 2.41);
+          const offset = Math.sin(phase) * maxOffset;
+          if (Math.abs(offset) < 0.5) continue;
+          const bandY = drawY + (drawH * band) / bands;
+          const bandHeight = drawH / bands + 1;
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(drawX, bandY, drawW, bandHeight);
+          ctx.clip();
+          ctx.globalAlpha = 0.35 + intensity / 180;
+          ctx.drawImage((video || img) as CanvasImageSource, drawX + offset, drawY, drawW, drawH);
+          ctx.restore();
+        }
       }
 
       // Vignette effect overlay
       if ((clip.vignette ?? 0) > 0) {
-        const radGrad = ctx.createRadialGradient(0, 0, width * 0.25, 0, 0, width * 0.7);
+        const feather = Math.max(0, Math.min(100, clip.vignetteFeather ?? 50)) / 100;
+        const innerRadius = width * (0.05 + feather * 0.4);
+        const outerRadius = width * (0.2 + feather * 1.0);
+        const radGrad = ctx.createRadialGradient(0, 0, innerRadius, 0, 0, outerRadius);
         radGrad.addColorStop(0, "rgba(0,0,0,0)");
         radGrad.addColorStop(1, `rgba(0,0,0,${(clip.vignette! / 100) * 0.85})`);
         ctx.fillStyle = radGrad;
@@ -204,13 +617,58 @@ export function renderCompositeFrame(
 }
 
 // Real Video Export Function producing a real downloadable MP4/WebM file
+function waitForMediaReady(media: HTMLMediaElement, timeoutMs = 12000): Promise<void> {
+  if (media.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out while decoding media."));
+    }, timeoutMs);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      media.removeEventListener("loadeddata", onReady);
+      media.removeEventListener("error", onError);
+    };
+    const onReady = () => { cleanup(); resolve(); };
+    const onError = () => {
+      cleanup();
+      reject(new Error("The device could not decode one of the imported media files."));
+    };
+    media.addEventListener("loadeddata", onReady, { once: true });
+    media.addEventListener("error", onError, { once: true });
+    media.load();
+  });
+}
+
+function seekMedia(media: HTMLMediaElement, time: number): Promise<void> {
+  if (Math.abs(media.currentTime - time) < 0.015 && !media.seeking) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out while seeking imported media."));
+    }, 8000);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      media.removeEventListener("seeked", onSeeked);
+      media.removeEventListener("error", onError);
+    };
+    const onSeeked = () => { cleanup(); resolve(); };
+    const onError = () => { cleanup(); reject(new Error("Could not seek in an imported media file.")); };
+    media.addEventListener("seeked", onSeeked, { once: true });
+    media.addEventListener("error", onError, { once: true });
+    try { media.currentTime = Math.max(0, time); } catch (error) {
+      cleanup();
+      reject(error instanceof Error ? error : new Error("Could not seek media."));
+    }
+  });
+}
+
 export async function exportProjectToVideoFile(
   project: Project,
   settings: ExportSettings,
   onProgress: (progress: number, frame: number, totalFrames: number, etaSec: number) => void,
   isCancelled: () => boolean
 ): Promise<{ downloadUrl: string; fileName: string }> {
-  // Determine resolution
   const resMap: Record<string, { w: number; h: number }> = {
     "480p": { w: 854, h: 480 },
     "720p": { w: 1280, h: 720 },
@@ -218,149 +676,182 @@ export async function exportProjectToVideoFile(
     "2K": { w: 2560, h: 1440 },
     "4K": { w: 3840, h: 2160 },
   };
-
   const dim = resMap[settings.resolution] || { w: 1280, h: 720 };
-  // Adjust for aspect ratio
   let targetWidth = dim.w;
   let targetHeight = dim.h;
   if (project.aspect === "9:16") {
     targetWidth = Math.min(dim.w, dim.h);
     targetHeight = Math.max(dim.w, dim.h);
   } else if (project.aspect === "1:1") {
-    const minDim = Math.min(dim.w, dim.h);
-    targetWidth = minDim;
-    targetHeight = minDim;
+    targetWidth = Math.min(dim.w, dim.h);
+    targetHeight = targetWidth;
   }
 
   const fps = settings.fps || 30;
-  const duration = Math.max(
-    3.0,
-    project.clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0)
-  );
-  const totalFrames = Math.round(duration * fps);
-
-  // Create offscreen canvas
+  const duration = Math.max(0.1, project.clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0));
+  const totalFrames = Math.max(1, Math.ceil(duration * fps));
   const canvas = document.createElement("canvas");
   canvas.width = targetWidth;
   canvas.height = targetHeight;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not create the video render canvas.");
+  if (typeof canvas.captureStream !== "function" || typeof MediaRecorder === "undefined") {
+    throw new Error("This Android WebView does not support video recording.");
+  }
 
-  // Create audio context for mixing audio tracks
-  const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+  // Resolve persistent IndexedDB media keys before creating decoders. Project
+  // metadata intentionally stores stable keys, never short-lived blob URLs.
+  const exportProject: Project = {
+    ...project,
+    clips: await Promise.all(project.clips.map(async (clip) => {
+      const source = await resolveMediaSource(clip.src || clip.thumb);
+      const thumb = clip.thumb && clip.thumb === clip.src
+        ? source
+        : await resolveMediaSource(clip.thumb);
+      return { ...clip, src: source, thumb };
+    })),
+  };
+
+  // Preload the actual media decoders. Video files are never passed to Image().
+  const preload = exportProject.clips.map(async (clip) => {
+    const url = clip.src || clip.thumb;
+    if (!url) return;
+    if (clip.type === "video" && clip.sourceMimeType?.startsWith("video/")) {
+      const video = getCachedVideo(url);
+      await waitForMediaReady(video);
+      await seekMedia(video, clip.sourceIn ?? 0);
+    } else if (clip.type === "audio") {
+      const audio = getCachedAudio(url);
+      await waitForMediaReady(audio);
+      await seekMedia(audio, clip.sourceIn ?? 0);
+    } else {
+      const image = getCachedImage(url);
+      if (!image.complete) {
+        await new Promise<void>((resolve, reject) => {
+          image.onload = () => resolve();
+          image.onerror = () => reject(new Error(`Could not load image: ${clip.name}`));
+        });
+      }
+      if (image.naturalWidth <= 0) throw new Error(`Could not decode image: ${clip.name}`);
+    }
+  });
+  await Promise.all(preload);
+
+  // Route all video and audio element sound into the recorded stream.
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
   let audioContext: AudioContext | null = null;
   let audioDest: MediaStreamAudioDestinationNode | null = null;
-
-  try {
-    if (AudioCtxClass) {
-      audioContext = new AudioCtxClass();
-      audioDest = audioContext.createMediaStreamDestination();
+  if (AudioContextClass) {
+    previewAudioContext ||= new AudioContextClass();
+    audioContext = previewAudioContext;
+    audioDest = audioContext.createMediaStreamDestination();
+    const audioSources = [
+      ...exportProject.clips.filter((clip) => clip.type === "audio" && clip.src).map((clip) => getCachedAudio(clip.src as string)),
+      ...exportProject.clips.filter((clip) => clip.type === "video" && clip.sourceMimeType?.startsWith("video/") && clip.src).map((clip) => getCachedVideo(clip.src as string)),
+    ];
+    for (const media of audioSources) {
+      const nodes = ensureMediaAudioNodes(media);
+      if (nodes) nodes.panner.connect(audioDest);
     }
-  } catch (e) {
-    console.warn("AudioContext init skipped for export", e);
+    if (audioContext.state === "suspended") await audioContext.resume();
   }
 
-  // Preload all media assets used in project
-  const preloadPromises = project.clips.map((clip) => {
-    return new Promise<void>((resolve) => {
-      const url = clip.src || clip.thumb || "/images/preview-car.jpg";
-      const img = getCachedImage(url);
-      if (img.complete) {
-        resolve();
-      } else {
-        img.onload = () => resolve();
-        img.onerror = () => resolve();
-      }
-    });
-  });
-  await Promise.all(preloadPromises);
-
-  // Set up capture stream & MediaRecorder
   const canvasStream = canvas.captureStream(fps);
-  if (audioDest && audioDest.stream.getAudioTracks().length > 0) {
-    audioDest.stream.getAudioTracks().forEach((t) => canvasStream.addTrack(t));
+  if (audioDest) {
+    audioDest.stream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
   }
 
-  let mimeType = "video/webm;codecs=vp9";
-  if (MediaRecorder.isTypeSupported("video/mp4;codecs=avc1.42E01E")) {
-    mimeType = "video/mp4;codecs=avc1.42E01E";
-  } else if (MediaRecorder.isTypeSupported("video/mp4")) {
-    mimeType = "video/mp4";
-  } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8")) {
-    mimeType = "video/webm;codecs=vp8";
-  } else if (MediaRecorder.isTypeSupported("video/webm")) {
-    mimeType = "video/webm";
+  const codec = (settings.codec || "auto").toLowerCase();
+  const codecCandidates: Record<string, string[]> = {
+    auto: [
+      "video/mp4;codecs=avc1.42E01E",
+      "video/mp4",
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm",
+    ],
+    h264: ["video/mp4;codecs=avc1.42E01E", "video/mp4"],
+    h265: ["video/mp4;codecs=hvc1", "video/mp4;codecs=hev1"],
+    av1: ["video/webm;codecs=av1,opus", "video/webm;codecs=av1", "video/mp4;codecs=av01"],
+  };
+  const mimeCandidates = codecCandidates[codec] || codecCandidates.auto;
+  const mimeType = mimeCandidates.find((candidate) => MediaRecorder.isTypeSupported(candidate));
+  if (!mimeType) {
+    throw new Error(
+      codec === "auto"
+        ? "This device does not support MP4 or WebM video recording."
+        : `The selected ${codec.toUpperCase()} codec is not supported by this Android WebView. Choose Auto or another codec.`
+    );
   }
 
-  const bitrateBps = (settings.bitrate > 0 ? settings.bitrate : 8000) * 1000;
+  const baseBitrateMbps: Record<string, number> = {
+    "480p": 2.5,
+    "720p": 5,
+    "1080p": 8,
+    "2K": 16,
+    "4K": 35,
+  };
+  const qualityMultiplier: Record<string, number> = {
+    low: 0.65,
+    medium: 1,
+    high: 1.35,
+    ultra: 1.8,
+  };
+  const estimatedBitrate = (baseBitrateMbps[settings.resolution] || 8) *
+    (fps / 30) *
+    (qualityMultiplier[(settings.quality || "high").toLowerCase()] || 1.35);
+  const bitrateBps = (settings.bitrate > 0 ? settings.bitrate : estimatedBitrate * 1000) * 1000;
   const mediaRecorder = new MediaRecorder(canvasStream, {
     mimeType,
     videoBitsPerSecond: bitrateBps,
+    audioBitsPerSecond: Math.max(64, settings.audioBitrate || 192) * 1000,
   });
-
   const recordedChunks: Blob[] = [];
-  mediaRecorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) {
-      recordedChunks.push(e.data);
-    }
+  mediaRecorder.ondataavailable = (event) => {
+    if (event.data && event.data.size > 0) recordedChunks.push(event.data);
   };
-
   const recordingFinishedPromise = new Promise<Blob>((resolve, reject) => {
-    mediaRecorder.onstop = () => {
-      const finalBlob = new Blob(recordedChunks, {
-        type: mimeType.startsWith("video/mp4") ? "video/mp4" : "video/webm",
-      });
-      resolve(finalBlob);
-    };
-    mediaRecorder.onerror = (err) => reject(err);
+    mediaRecorder.onstop = () => resolve(new Blob(recordedChunks, { type: mimeType.startsWith("video/mp4") ? "video/mp4" : "video/webm" }));
+    mediaRecorder.onerror = (event) => reject(event);
   });
 
   mediaRecorder.start(100);
-
-  // Frame by frame rendering loop
   const startTime = performance.now();
-  for (let f = 0; f < totalFrames; f++) {
-    if (isCancelled()) {
-      mediaRecorder.stop();
-      if (audioContext && audioContext.state !== "closed") {
-        audioContext.close();
-      }
-      throw new Error("Render cancelled by user");
+  try {
+    for (let frame = 0; frame < totalFrames; frame++) {
+      if (isCancelled()) throw new Error("Export cancelled by user.");
+      const timeSec = frame / fps;
+      renderCompositeFrame(ctx, targetWidth, targetHeight, exportProject, timeSec, {
+        previewQuality: "full",
+        playing: true,
+      });
+      const progress = ((frame + 1) / totalFrames) * 100;
+      const elapsed = (performance.now() - startTime) / 1000;
+      const measuredFps = frame > 0 ? (frame + 1) / Math.max(0.001, elapsed) : fps;
+      onProgress(progress, frame + 1, totalFrames, (totalFrames - frame - 1) / Math.max(1, measuredFps));
+      await new Promise((resolve) => window.setTimeout(resolve, 1000 / fps));
     }
 
-    const timeSec = f / fps;
-    renderCompositeFrame(ctx, targetWidth, targetHeight, project, timeSec, {
+    renderCompositeFrame(ctx, targetWidth, targetHeight, exportProject, duration, {
       previewQuality: "full",
+      playing: false,
     });
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    mediaRecorder.stop();
+    const finalBlob = await recordingFinishedPromise;
 
-    // Notify progress
-    const progress = (f / totalFrames) * 100;
-    const elapsedSec = (performance.now() - startTime) / 1000;
-    const framesPerSec = f > 0 ? f / elapsedSec : fps;
-    const etaSec = (totalFrames - f) / Math.max(1, framesPerSec);
-
-    onProgress(progress, f, totalFrames, etaSec);
-
-    // Yield execution briefly to let MediaRecorder ingest frames smoothly
-    await new Promise((r) => setTimeout(r, 1000 / fps / 2));
+    const downloadUrl = URL.createObjectURL(finalBlob);
+    const cleanProjectName = (project.name || "VexEdit_Video").replace(/[^a-zA-Z0-9_-]/g, "_");
+    const extension = mimeType.startsWith("video/mp4") ? "mp4" : "webm";
+    const fileName = `${cleanProjectName}_${settings.resolution}_${fps}fps.${extension}`;
+    onProgress(100, totalFrames, totalFrames, 0);
+    return { downloadUrl, fileName };
+  } catch (error) {
+    if (mediaRecorder.state !== "inactive") mediaRecorder.stop();
+    await recordingFinishedPromise.catch(() => undefined);
+    throw error;
+  } finally {
+    videoCache.forEach((video) => video.pause());
+    audioCache.forEach((audio) => audio.pause());
   }
-
-  // Draw final frame and finish recording
-  renderCompositeFrame(ctx, targetWidth, targetHeight, project, duration, { previewQuality: "full" });
-  await new Promise((r) => setTimeout(r, 200));
-
-  mediaRecorder.stop();
-  if (audioContext && audioContext.state !== "closed") {
-    audioContext.close();
-  }
-
-  const finalBlob = await recordingFinishedPromise;
-  const downloadUrl = URL.createObjectURL(finalBlob);
-
-  const cleanProjectName = (project.name || "VexEdit_Video").replace(/[^a-zA-Z0-9_-]/g, "_");
-  const ext = mimeType.startsWith("video/mp4") ? "mp4" : "webm";
-  const fileName = `${cleanProjectName}_${settings.resolution}_${settings.fps}fps.${ext}`;
-
-  onProgress(100, totalFrames, totalFrames, 0);
-
-  return { downloadUrl, fileName };
 }

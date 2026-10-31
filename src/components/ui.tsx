@@ -187,18 +187,21 @@ export function Ghost({
   onClick,
   className,
   danger,
+  disabled,
 }: {
   children: ReactNode;
   onClick?: () => void;
   className?: string;
   danger?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-2xl bg-white/6 px-4 py-2.5 text-sm font-medium text-zinc-200 transition active:scale-[0.98]",
+        "inline-flex items-center justify-center gap-2 rounded-2xl bg-white/6 px-4 py-2.5 text-sm font-medium text-zinc-200 transition active:scale-[0.98] disabled:opacity-35 disabled:active:scale-100",
         danger && "bg-rose-500/15 text-rose-300",
         className
       )}

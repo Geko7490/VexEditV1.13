@@ -47,6 +47,20 @@ export interface ModuleInfo {
 export type TransitionType = "none" | "fade" | "dissolve" | "wipe" | "zoom";
 export type ColorFilterPreset = "none" | "teal_orange" | "cyberpunk" | "noir" | "vintage" | "vivid" | "golden";
 
+export interface ClipKeyframe {
+  time: number;
+  opacity?: number;
+  scale?: number;
+  x?: number;
+  y?: number;
+  rotation?: number;
+}
+
+export interface AudioEffectInstance {
+  id: string;
+  params: Record<string, any>;
+}
+
 export interface Clip {
   id: string;
   track: number;
@@ -61,8 +75,15 @@ export interface Clip {
   frozen: boolean;
   effects: string[];
   thumb?: string;
-  src?: string; // real video or image URL / blob URL
+  src?: string; // persistent media key, blob URL, or image/video URL
+  sourceDuration?: number; // original media duration in seconds
+  sourceMimeType?: string; // MIME type of the original imported file
+  sourceIn?: number; // source-media in point in seconds
+  sourceOut?: number; // source-media out point in seconds
   volume: number;
+  pan?: number; // stereo balance for audio clips, -1 left to 1 right
+  audioEffects?: AudioEffectInstance[];
+  keyframes?: ClipKeyframe[];
   x: number;
   y: number;
   scale: number;
@@ -81,7 +102,12 @@ export interface Clip {
   contrast?: number;   // -100 to 100
   saturation?: number; // -100 to 100
   vignette?: number;   // 0 to 100
+  vignetteFeather?: number;
   blur?: number;       // 0 to 100
+  hue?: number;        // degrees
+  chromaticAberration?: number; // 0 to 100
+  glitchIntensity?: number; // 0 to 100
+  glitchSpeed?: number; // 0.1 to 5
 }
 
 export interface Track {
