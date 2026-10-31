@@ -27,6 +27,7 @@ export function EditorScreen(props: {
   onBack: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  pushHistory: (id: string, label: string) => void;
   updateProject: (id: string, patch: Partial<Project>) => void;
   addClip: (projectId: string, clip: Omit<Clip, "id">) => void;
   deleteClip: (projectId: string, clipId: string) => void;
@@ -59,7 +60,12 @@ export function EditorScreen(props: {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const dragging = useRef<{ id: string; start: number; x: number } | null>(null);
+  const dragging = useRef<{
+    id: string;
+    mode: "move" | "left" | "right";
+    startX: number;
+    initial: Clip;
+  } | null>(null);
   const cancelExportRef = useRef(false);
 
   useEffect(() => {
@@ -482,16 +488,56 @@ export function EditorScreen(props: {
                           selected={selected === c.id}
                           height={h - 8}
                           onSelect={() => setSelected(c.id)}
-                          onDragStart={(x) => {
-                            dragging.current = { id: c.id, start: c.start, x };
+                          onDragStart={(mode, x) => {
+                            props.pushHistory(project.id, mode === "move" ? "move" : "trim");
+                            dragging.current = { id: c.id, mode, startX: x, initial: { ...c } };
                           }}
                           onDrag={(x) => {
                             const d = dragging.current;
                             if (!d || d.id !== c.id) return;
-                            let next = d.start + (x - d.x) / px;
-                            next = Math.max(0, next);
-                            if (snap) next = Math.round(next * 2) / 2;
-                            props.updateClip(project.id, c.id, { start: next });
+                            const delta = (x - d.startX) / px;
+                            const initial = d.initial;
+                            const speed = Math.max(0.01, initial.speed || 1);
+
+                            if (d.mode === "move") {
+                              let nextStart = Math.max(0, initial.start + delta);
+                              if (snap) nextStart = Math.round(nextStart * project.fps) / project.fps;
+                              props.updateClip(project.id, c.id, { start: nextStart });
+                              return;
+                            }
+
+                            const sourceIn = Math.max(0, initial.sourceIn ?? 0);
+                            const sourceOut = initial.sourceOut ??
+                              (initial.sourceDuration != null ? initial.sourceDuration : sourceIn + initial.duration * speed);
+
+                            if (d.mode === "left") {
+                              const minDelta = -Math.min(initial.start, sourceIn / speed);
+                              const maxDelta = Math.max(0, initial.duration - 1 / Math.max(1, project.fps));
+                              const applied = Math.max(minDelta, Math.min(maxDelta, delta));
+                              const nextDuration = Math.max(1 / Math.max(1, project.fps), initial.duration - applied);
+                              props.updateClip(project.id, c.id, {
+                                start: Math.max(0, initial.start + applied),
+                                duration: nextDuration,
+                                sourceIn: Math.max(0, sourceIn + applied * speed),
+                                sourceOut,
+                              });
+                            } else {
+                              const maxDuration = initial.sourceDuration != null
+                                ? Math.max(1 / Math.max(1, project.fps), (Math.min(sourceOut, initial.sourceDuration) - sourceIn) / speed)
+                                : 600;
+                              const nextDuration = Math.max(
+                                1 / Math.max(1, project.fps),
+                                Math.min(maxDuration, initial.duration + delta)
+                              );
+                              props.updateClip(project.id, c.id, {
+                                duration: nextDuration,
+                                sourceIn,
+                                sourceOut: Math.min(sourceIn + nextDuration * speed, initial.sourceDuration ?? Number.POSITIVE_INFINITY),
+                              });
+                            }
+                          }}
+                          onDragEnd={() => {
+                            dragging.current = null;
                           }}
                         />
                       ))}
@@ -989,14 +1035,16 @@ function ClipView({
   onSelect,
   onDragStart,
   onDrag,
+  onDragEnd,
 }: {
   clip: Clip;
   px: number;
   selected: boolean;
   height: number;
   onSelect: () => void;
-  onDragStart: (x: number) => void;
+  onDragStart: (mode: "move" | "left" | "right", x: number) => void;
   onDrag: (x: number) => void;
+  onDragEnd: () => void;
 }) {
   const bars = clip.type === "audio" ? waveBars(clip.id, 48) : [];
   return (
@@ -1005,12 +1053,16 @@ function ClipView({
         e.stopPropagation();
         onSelect();
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-        onDragStart(e.clientX);
+        const handle = (e.target as HTMLElement).closest<HTMLElement>("[data-trim-edge]");
+        const edge = handle?.dataset.trimEdge;
+        onDragStart(edge === "left" || edge === "right" ? edge : "move", e.clientX);
       }}
       onPointerMove={(e) => {
         if (e.buttons !== 1) return;
         onDrag(e.clientX);
       }}
+      onPointerUp={onDragEnd}
+      onPointerCancel={onDragEnd}
       className={`absolute top-1 overflow-hidden rounded-[10px] ${
         selected ? "ring-[2.5px] ring-violet-400" : "ring-1 ring-black/40"
       }`}
@@ -1035,6 +1087,20 @@ function ClipView({
         </div>
       ) : (
         <div className="h-full w-full bg-violet-800/40" />
+      )}
+      {selected && (
+        <>
+          <div
+            data-trim-edge="left"
+            className="absolute inset-y-0 left-0 z-20 w-3 cursor-ew-resize border-r-2 border-white/90 bg-violet-400/80"
+            style={{ touchAction: "none" }}
+          />
+          <div
+            data-trim-edge="right"
+            className="absolute inset-y-0 right-0 z-20 w-3 cursor-ew-resize border-l-2 border-white/90 bg-violet-400/80"
+            style={{ touchAction: "none" }}
+          />
+        </>
       )}
     </div>
   );
