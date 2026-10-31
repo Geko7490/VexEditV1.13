@@ -347,8 +347,14 @@ export function renderCompositeFrame(
 
   // Active clips at current time
   const activeClips = project.clips
-    .filter((c) => timeSec >= c.start && timeSec < c.start + c.duration)
-    .sort((a, b) => a.track - b.track);
+    .filter((clip) => timeSec >= clip.start && timeSec < clip.start + clip.duration)
+    .sort((a, b) => {
+      const aTrack = project.tracks.find((track) => track.id === a.track);
+      const bTrack = project.tracks.find((track) => track.id === b.track);
+      const priority = (track: typeof aTrack) =>
+        track?.type === "video" ? 0 : track?.type === "overlay" ? 1 : 2;
+      return priority(aTrack) - priority(bTrack) || a.track - b.track;
+    });
 
   const activeVideoUrls = new Set(
     activeClips
