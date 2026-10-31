@@ -24,7 +24,6 @@ export function EditorScreen(props: {
   project: Project;
   settings: SettingsState;
   saved: boolean;
-  renderJobs: RenderJob[];
   onBack: () => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -36,11 +35,6 @@ export function EditorScreen(props: {
   duplicateClip: (projectId: string, clipId: string) => void;
   splitClip: (projectId: string, clipId: string, at: number) => void;
   updateClip: (projectId: string, clipId: string, patch: Partial<Clip>) => void;
-  startRender: (projectId: string) => void;
-  pauseRender: (id: string) => void;
-  resumeRender: (id: string) => void;
-  cancelRender: (id: string) => void;
-  retryRender: (id: string) => void;
   updatePreview: (p: Partial<PreviewSettings>) => void;
   updateExport: (p: Partial<ExportSettings>) => void;
 }) {
