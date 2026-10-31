@@ -49,7 +49,7 @@ const audioNodeCache = new WeakMap<HTMLMediaElement, {
   effectsSignature: string;
 }>();
 
-function createAudioEffectNodes(
+export function createAudioEffectNodes(
   context: BaseAudioContext,
   effects: AudioEffectInstance[]
 ): AudioNode[] {
