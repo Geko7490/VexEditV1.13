@@ -16,6 +16,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.webkit.WebViewAssetLoader
 
 /**
  * Hosts the existing VexEdit React editor inside a real Android application.
@@ -43,13 +44,17 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
 
+        val assetLoader = WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
+
         val webView = WebView(this).apply {
             setBackgroundColor(android.graphics.Color.rgb(16, 16, 20))
             visibility = View.VISIBLE
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.databaseEnabled = true
-            settings.allowFileAccess = true
+            settings.allowFileAccess = false
             settings.allowContentAccess = true
             settings.mediaPlaybackRequiresUserGesture = false
             settings.javaScriptCanOpenWindowsAutomatically = false
@@ -59,14 +64,21 @@ class MainActivity : ComponentActivity() {
             settings.loadWithOverviewMode = false
 
             webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: WebView,
+                    request: WebResourceRequest
+                ): android.webkit.WebResourceResponse? {
+                    return assetLoader.shouldInterceptRequest(request.url)
+                        ?: super.shouldInterceptRequest(view, request)
+                }
+
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
                     request: WebResourceRequest
                 ): Boolean {
                     // Keep the editor self-contained. External links are not allowed
                     // to replace the application with an arbitrary website.
-                    return request.url.scheme != "file" &&
-                        request.url.host != "appassets.androidplatform.net"
+                    return request.url.host != "appassets.androidplatform.net"
                 }
             }
 
@@ -103,7 +115,7 @@ class MainActivity : ComponentActivity() {
             }
 
             // The complete React/Vite build is packaged with the APK.
-            loadUrl("file:///android_asset/web/index.html")
+            loadUrl("https://appassets.androidplatform.net/assets/web/index.html")
         }
 
         editorWebView = webView
