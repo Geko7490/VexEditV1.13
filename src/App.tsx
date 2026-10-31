@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   loadSettings, saveSettings, loadProjects, saveProjects, loadPresets, savePresets,
   loadChains, saveChains, saveModuleState, uid,
@@ -52,6 +52,8 @@ export default function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const [savedFlag, setSavedFlag] = useState(true);
   const [clock, setClock] = useState(() => new Date());
+  const editHistoryTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const activeEditHistory = useRef<Set<string>>(new Set());
 
   const lang = settings.lang;
   const tr = (k: string) => t(lang, k);
@@ -68,6 +70,10 @@ export default function App() {
   useEffect(() => { savePresets(presets); }, [presets]);
   useEffect(() => { saveChains(chains); }, [chains]);
   useEffect(() => { saveModuleState(modules); }, [modules]);
+
+  useEffect(() => () => {
+    Object.values(editHistoryTimers.current).forEach((timer) => clearTimeout(timer));
+  }, []);
 
   useEffect(() => {
     const on = () => setOnline(true);
@@ -265,9 +271,34 @@ export default function App() {
   }, [pushHistory]);
 
   const updateClip = useCallback((projectId: string, clipId: string, patch: Partial<Clip>) => {
+    const currentProject = projects.find((item) => item.id === projectId);
+    const currentClip = currentProject?.clips.find((item) => item.id === clipId);
+    if (!currentClip) return;
+    const hasChange = Object.entries(patch).some(([key, value]) =>
+      JSON.stringify((currentClip as any)[key]) !== JSON.stringify(value)
+    );
+    if (!hasChange) return;
+
+    // Group continuous slider/typing changes into one undo step.
+    if (!activeEditHistory.current.has(projectId)) {
+      pushHistory(projectId, "edit:before");
+      activeEditHistory.current.add(projectId);
+    }
     setSavedFlag(false);
-    setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, clips: p.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)), updatedAt: Date.now() } : p)));
-  }, []);
+    setProjects((prev) => prev.map((p) => (
+      p.id === projectId
+        ? { ...p, clips: p.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)), updatedAt: Date.now() }
+        : p
+    )));
+
+    const previousTimer = editHistoryTimers.current[projectId];
+    if (previousTimer) clearTimeout(previousTimer);
+    editHistoryTimers.current[projectId] = setTimeout(() => {
+      activeEditHistory.current.delete(projectId);
+      delete editHistoryTimers.current[projectId];
+      pushHistory(projectId, "edit");
+    }, 450);
+  }, [projects, pushHistory]);
 
   const savePreset = useCallback((effectId: string, name: string, params: Record<string, any>) => {
     setPresets((prev) => [{ id: uid("preset"), name, effectId, params, createdAt: Date.now() }, ...prev]);
