@@ -47,6 +47,15 @@ export interface ModuleInfo {
 export type TransitionType = "none" | "fade" | "dissolve" | "wipe" | "zoom";
 export type ColorFilterPreset = "none" | "teal_orange" | "cyberpunk" | "noir" | "vintage" | "vivid" | "golden";
 
+export interface ClipKeyframe {
+  time: number;
+  opacity?: number;
+  scale?: number;
+  x?: number;
+  y?: number;
+  rotation?: number;
+}
+
 export interface Clip {
   id: string;
   track: number;
@@ -68,6 +77,7 @@ export interface Clip {
   sourceOut?: number; // source-media out point in seconds
   volume: number;
   pan?: number; // stereo balance for audio clips, -1 left to 1 right
+  keyframes?: ClipKeyframe[];
   x: number;
   y: number;
   scale: number;
