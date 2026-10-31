@@ -76,6 +76,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const handleAndroidBack = () => {
+      if (overlay !== null) {
+        setOverlay(null);
+      } else if (tab !== "home") {
+        setTab("home");
+      } else {
+        (window as any).VexEditAndroid?.finishApp?.();
+      }
+    };
+    window.addEventListener("vexedit:android-back", handleAndroidBack);
+    return () => window.removeEventListener("vexedit:android-back", handleAndroidBack);
+  }, [overlay, tab]);
+
+  useEffect(() => {
     const on = () => setOnline(true);
     const off = () => setOnline(false);
     window.addEventListener("online", on);
