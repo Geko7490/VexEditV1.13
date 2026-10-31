@@ -409,7 +409,9 @@ export default function App() {
             <SettingsScreen
               tr={tr} settings={settings} setSettings={setSettings}
               updatePreview={updatePreview} updateExport={updateExport}
-              projects={projects} modules={modules} showToast={showToast}
+              projects={projects} modules={modules}
+              backupData={{ settings, projects, modules }}
+              showToast={showToast}
             />
           )}
 
