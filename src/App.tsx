@@ -29,16 +29,21 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>(() => loadProjects());
   const [presets, setPresets] = useState<Preset[]>(() => loadPresets());
   const [chains, setChains] = useState<AudioChain[]>(() => loadChains());
-  const [modules, setModules] = useState<ModuleInfo[]>(() => {
-    const saved = loadModuleState();
-    if (saved && Array.isArray(saved)) {
-      return MODULE_CATALOG.map((m) => {
-        const s = saved.find((x: any) => x.id === m.id);
-        return s ? { ...m, ...s, status: s.status ?? m.status } : { ...m };
-      });
-    }
-    return MODULE_CATALOG.map((m) => ({ ...m }));
-  });
+  const [modules, setModules] = useState<ModuleInfo[]>(() =>
+    // Previous versions simulated module downloads. Reset those fake states;
+    // the real SDK-backed module installer is intentionally deferred.
+    MODULE_CATALOG.map((module) => ({
+      ...module,
+      status: "not_installed",
+      progress: 0,
+      downloadedBytes: 0,
+      totalBytes: module.downloadSize,
+      speed: 0,
+      eta: 0,
+      error: undefined,
+      installedAt: undefined,
+    }))
+  );
   const [tab, setTab] = useState<Tab>("home");
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -224,38 +229,11 @@ export default function App() {
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, clips: p.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)), updatedAt: Date.now() } : p)));
   }, []);
 
-  const installModule = useCallback((id: string) => {
-    setModules((prev) => prev.map((m) => (m.id === id ? { ...m, status: "downloading", progress: 0, downloadedBytes: 0, speed: 0 } : m)));
-  }, []);
-
-  const moduleTimers = useRef<Record<string, any>>({});
-  useEffect(() => {
-    modules.forEach((m) => {
-      if (m.status === "downloading" && !moduleTimers.current[m.id]) {
-        let downloaded = m.downloadedBytes;
-        const total = m.totalBytes;
-        const timer = setInterval(() => {
-          downloaded += Math.floor(Math.random() * 380000 + 180000);
-          if (downloaded >= total) {
-            downloaded = total;
-            clearInterval(timer);
-            delete moduleTimers.current[m.id];
-            setModules((prev) => prev.map((x) => (x.id === m.id ? { ...x, status: "verifying", progress: 100, downloadedBytes: total, speed: 0, eta: 0 } : x)));
-            setTimeout(() => {
-              setModules((prev) => prev.map((x) => (x.id === m.id ? { ...x, status: "installing" } : x)));
-              setTimeout(() => {
-                setModules((prev) => prev.map((x) => (x.id === m.id ? { ...x, status: "installed", installedAt: Date.now(), progress: 100 } : x)));
-              }, 800);
-            }, 600);
-          } else {
-            const speed = Math.floor(Math.random() * 1800000 + 400000);
-            setModules((prev) => prev.map((x) => (x.id === m.id ? { ...x, downloadedBytes: downloaded, progress: (downloaded / total) * 100, speed, eta: (total - downloaded) / speed } : x)));
-          }
-        }, 250);
-        moduleTimers.current[m.id] = timer;
-      }
-    });
-  }, [modules]);
+  const installModule = useCallback((_id: string) => {
+    showToast(lang === "tr"
+      ? "Modül sistemi, temel editör tamamlandıktan sonra eklenecek."
+      : "The module system will be added after the core editor is complete.");
+  }, [lang, showToast]);
 
   const pauseModule = useCallback((id: string) => {
     const tm = moduleTimers.current[id];
