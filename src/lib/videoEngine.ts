@@ -36,6 +36,19 @@ export function getCachedVideo(url: string): HTMLVideoElement {
   return video;
 }
 
+const audioCache: Map<string, HTMLAudioElement> = new Map();
+
+export function getCachedAudio(url: string): HTMLAudioElement {
+  const cached = audioCache.get(url);
+  if (cached) return cached;
+  const audio = document.createElement("audio");
+  audio.crossOrigin = "anonymous";
+  audio.src = url;
+  audio.preload = "auto";
+  audioCache.set(url, audio);
+  return audio;
+}
+
 // Convert ColorFilterPreset to CSS filter string
 export function getFilterStyle(clip: Clip): string {
   const parts: string[] = [];
@@ -107,8 +120,40 @@ export function renderCompositeFrame(
       .filter((clip) => clip.type === "video" && clip.src)
       .map((clip) => clip.src as string)
   );
+  const activeAudioClips = activeClips.filter((clip) => clip.type === "audio" && clip.src);
+  const activeAudioUrls = new Set(activeAudioClips.map((clip) => clip.src as string));
+
   for (const [url, cachedVideo] of videoCache) {
     if (!activeVideoUrls.has(url) && !cachedVideo.paused) cachedVideo.pause();
+  }
+  for (const [url, cachedAudio] of audioCache) {
+    if (!activeAudioUrls.has(url) && !cachedAudio.paused) cachedAudio.pause();
+  }
+
+  // Synchronize audio-only clips with the editor playhead.
+  for (const clip of activeAudioClips) {
+    const track = project.tracks.find((item) => item.id === clip.track);
+    const audio = getCachedAudio(clip.src as string);
+    const sourceTime = Math.max(0, (clip.sourceIn ?? 0) + (timeSec - clip.start) * (clip.speed || 1));
+    if (track?.muted) {
+      audio.pause();
+      continue;
+    }
+    if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      if (options.playing) {
+        if (Math.abs(audio.currentTime - sourceTime) > 0.5 && !audio.seeking) {
+          try { audio.currentTime = sourceTime; } catch { /* wait for metadata */ }
+        }
+        audio.playbackRate = Math.max(0.25, Math.min(4, clip.speed || 1));
+        audio.volume = Math.max(0, Math.min(1, (clip.volume ?? 1) * (track?.volume ?? 1)));
+        if (audio.paused && !audio.ended) void audio.play().catch(() => undefined);
+      } else {
+        if (!audio.paused) audio.pause();
+        if (!audio.seeking && Math.abs(audio.currentTime - sourceTime) > 0.025) {
+          try { audio.currentTime = sourceTime; } catch { /* wait for metadata */ }
+        }
+      }
+    }
   }
 
   // Render tracks
