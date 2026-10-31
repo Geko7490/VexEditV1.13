@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Preset, Project, Clip } from "../lib/types";
 import { VIDEO_EFFECTS, AUDIO_EFFECTS } from "../lib/mock";
+import { resolveMediaSource } from "../lib/mediaStore";
 import * as Ic from "../components/icons";
 import { Slider, Input, Primary, Ghost } from "../components/ui";
 
@@ -35,6 +36,22 @@ export function EffectsScreen({
   const videoClips = project?.clips.filter((clip) => clip.type === "video" || clip.type === "image") ?? [];
   const [selectedClipId, setSelectedClipId] = useState<string | null>(videoClips[0]?.id ?? null);
   const selectedClip = videoClips.find((clip) => clip.id === selectedClipId) ?? null;
+  const [previewMediaUrl, setPreviewMediaUrl] = useState("");
+  useEffect(() => {
+    if (!videoClips.some((clip) => clip.id === selectedClipId)) {
+      setSelectedClipId(videoClips[0]?.id ?? null);
+    }
+  }, [project?.id, videoClips, selectedClipId]);
+  useEffect(() => {
+    let cancelled = false;
+    const source = selectedClip?.thumb || selectedClip?.src;
+    void resolveMediaSource(source).then((url) => {
+      if (!cancelled) setPreviewMediaUrl(url || "");
+    }).catch(() => {
+      if (!cancelled) setPreviewMediaUrl("");
+    });
+    return () => { cancelled = true; };
+  }, [selectedClip?.id, selectedClip?.src, selectedClip?.thumb]);
   const canApply = !["fx.chroma", "fx.glitch"].includes(id);
 
   const applyEffect = () => {
@@ -102,24 +119,24 @@ export function EffectsScreen({
           ))}
         </div>
         <div className="mt-4 overflow-hidden rounded-2xl bg-[#1c1c22] ring-1 ring-white/6">
-          <img
-            src={selectedClip?.thumb || selectedClip?.src || "/images/preview-car.jpg"}
-            alt=""
-            className="aspect-video w-full object-cover"
-            style={{
-              filter: id === "fx.blur"
-                ? `blur(${Number(params.radius || 0)}px)`
-                : id === "fx.brightness"
-                  ? `brightness(${1 + Number(params.value || 0) / 100})`
-                  : id === "fx.contrast"
-                    ? `contrast(${1 + Number(params.value || 0) / 100})`
-                    : id === "fx.saturation"
-                      ? `saturate(${1 + Number(params.value || 0) / 100})`
-                      : id === "fx.hue"
-                        ? `hue-rotate(${Number(params.degrees || 0)}deg)`
-                        : "none",
-            }}
-          />
+          {selectedClip?.type === "video" && selectedClip.sourceMimeType?.startsWith("video/") && previewMediaUrl ? (
+            <video
+              src={previewMediaUrl}
+              autoPlay
+              loop
+              muted
+              playsInline
+              className="aspect-video w-full object-cover"
+              style={{ filter: previewFilter(id, params) }}
+            />
+          ) : (
+            <img
+              src={previewMediaUrl || "/images/preview-car.jpg"}
+              alt=""
+              className="aspect-video w-full object-cover"
+              style={{ filter: previewFilter(id, params) }}
+            />
+          )}
         </div>
         <div className="mt-4 rounded-2xl bg-[#1c1c22] p-4 ring-1 ring-white/6">
           {eff.params.map((p) => (
@@ -180,4 +197,15 @@ export function EffectsScreen({
       </div>
     </div>
   );
+}
+
+function previewFilter(id: string, params: Record<string, any>): string {
+  switch (id) {
+    case "fx.blur": return `blur(${Number(params.radius || 0)}px)`;
+    case "fx.brightness": return `brightness(${1 + Number(params.value || 0) / 100})`;
+    case "fx.contrast": return `contrast(${1 + Number(params.value || 0) / 100})`;
+    case "fx.saturation": return `saturate(${1 + Number(params.value || 0) / 100})`;
+    case "fx.hue": return `hue-rotate(${Number(params.degrees || 0)}deg)`;
+    default: return "none";
+  }
 }
