@@ -341,13 +341,14 @@ export default function App() {
   };
 
   const showNav = overlay === null;
+  const isNativeAndroid = typeof window !== "undefined" && Boolean((window as any).VexEditAndroid?.isAvailable?.());
   const hh = clock.getHours().toString().padStart(2, "0");
   const mm = clock.getMinutes().toString().padStart(2, "0");
 
   return (
     <div className="flex min-h-[100dvh] items-center justify-center bg-[#050506]">
       <div className="relative flex h-[100dvh] w-full max-w-[430px] flex-col overflow-hidden bg-[#111114] text-white shadow-[0_0_80px_rgba(124,92,255,0.12)]">
-        {showNav && (
+        {showNav && !isNativeAndroid && (
           <div className="flex h-7 shrink-0 items-center justify-between px-5 text-[12px] font-medium text-zinc-200">
             <span>{hh}:{mm}</span>
             <div className="flex items-center gap-1.5 text-zinc-300">
