@@ -1,4 +1,4 @@
-import type { SettingsState, PreviewSettings, ExportSettings, Project, ModuleInfo } from "../lib/types";
+import type { SettingsState, PreviewSettings, ExportSettings, Project, ModuleInfo, Preset, AudioChain } from "../lib/types";
 import { formatBytes } from "../lib/store";
 import { Field, Select, Input, Ghost } from "../components/ui";
 
@@ -20,7 +20,13 @@ export function SettingsScreen({
   updateExport: (p: Partial<ExportSettings>) => void;
   projects: Project[];
   modules: ModuleInfo[];
-  backupData: { settings: SettingsState; projects: Project[]; modules: ModuleInfo[] };
+  backupData: {
+    settings: SettingsState;
+    projects: Project[];
+    modules: ModuleInfo[];
+    presets: Preset[];
+    chains: AudioChain[];
+  };
   showToast: (m: string) => void;
 }) {
   const installed = modules.filter((m) => m.status === "installed").reduce((a, m) => a + m.installSize, 0);
@@ -164,7 +170,7 @@ export function SettingsScreen({
           </div>
           <div className="mt-3">
             <Field label={tr("storage")}>
-              <Input value={settings.storageLocation} onChange={(e: any) => setSettings((s: SettingsState) => ({ ...s, storageLocation: e.target.value }))} />
+              <Input value={settings.storageLocation || "Movies/VexEdit"} disabled />
             </Field>
           </div>
           <div className="mt-3 flex gap-2">
