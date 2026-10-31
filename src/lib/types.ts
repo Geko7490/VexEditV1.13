@@ -56,6 +56,11 @@ export interface ClipKeyframe {
   rotation?: number;
 }
 
+export interface AudioEffectInstance {
+  id: string;
+  params: Record<string, any>;
+}
+
 export interface Clip {
   id: string;
   track: number;
@@ -77,6 +82,7 @@ export interface Clip {
   sourceOut?: number; // source-media out point in seconds
   volume: number;
   pan?: number; // stereo balance for audio clips, -1 left to 1 right
+  audioEffects?: AudioEffectInstance[];
   keyframes?: ClipKeyframe[];
   x: number;
   y: number;
