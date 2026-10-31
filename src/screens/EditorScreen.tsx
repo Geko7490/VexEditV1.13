@@ -276,7 +276,7 @@ export function EditorScreen(props: {
         duration: mediaDuration,
         sourceDuration: isVideo || isAudio ? mediaDuration : undefined,
         sourceMimeType: file.type,
-        sourceIn: 0,
+        sourceIn: isVideo || isAudio ? 0 : undefined,
         sourceOut: isVideo || isAudio ? mediaDuration : undefined,
         color: isAudio ? "#3ee0c8" : "#8b67f7",
         opacity: 1,
@@ -658,6 +658,12 @@ export function EditorScreen(props: {
                             const delta = (x - d.startX) / px;
                             const initial = d.initial;
                             const speed = Math.max(0.01, initial.speed || 1);
+                            const trimDelta = initial.type === "image"
+                              ? delta
+                              : Math.round(delta * Math.max(1, project.fps)) / Math.max(1, project.fps);
+                            const minDuration = initial.type === "image"
+                              ? 0.01
+                              : 1 / Math.max(1, project.fps);
 
                             if (d.mode === "move") {
                               let nextStart = Math.max(0, initial.start + delta);
@@ -676,30 +682,35 @@ export function EditorScreen(props: {
                               (initial.sourceDuration != null ? initial.sourceDuration : sourceIn + initial.duration * speed);
 
                             if (d.mode === "left") {
-                              const minDelta = -Math.min(initial.start, sourceIn / speed);
-                              const maxDelta = Math.max(0, initial.duration - 1 / Math.max(1, project.fps));
-                              const applied = Math.max(minDelta, Math.min(maxDelta, delta));
+                              const hasSourceBounds = initial.sourceDuration != null || initial.sourceOut != null || initial.sourceIn != null;
+                              const minDelta = hasSourceBounds
+                                ? -Math.min(initial.start, sourceIn / speed)
+                                : -initial.start;
+                              const maxDelta = Math.max(0, initial.duration - minDuration);
+                              const applied = Math.max(minDelta, Math.min(maxDelta, trimDelta));
                               if (Math.abs(applied) < 0.0001) return;
                               if (!d.changed) {
                                 props.pushHistory(project.id, "trim");
                                 d.changed = true;
                               }
-                              const nextDuration = Math.max(1 / Math.max(1, project.fps), initial.duration - applied);
+                              const nextDuration = Math.max(minDuration, initial.duration - applied);
                               props.updateClip(project.id, c.id, {
                                 start: Math.max(0, initial.start + applied),
                                 duration: nextDuration,
-                                sourceIn: Math.max(0, sourceIn + applied * speed),
-                                sourceOut,
+                                ...(hasSourceBounds ? {
+                                  sourceIn: Math.max(0, sourceIn + applied * speed),
+                                  sourceOut,
+                                } : {}),
                               });
                             } else {
-                                const sourceEndLimit = initial.sourceDuration ?? sourceOut;
-                              const maxDuration = Math.max(
-                                1 / Math.max(1, project.fps),
-                                (sourceEndLimit - sourceIn) / speed
-                              );
+                                const hasSourceBounds = initial.sourceDuration != null || initial.sourceOut != null || initial.sourceIn != null;
+                              const sourceEndLimit = initial.sourceDuration ?? sourceOut;
+                              const maxDuration = hasSourceBounds
+                                ? Math.max(minDuration, (sourceEndLimit - sourceIn) / speed)
+                                : 600;
                               const nextDuration = Math.max(
-                                1 / Math.max(1, project.fps),
-                                Math.min(maxDuration, initial.duration + delta)
+                                minDuration,
+                                Math.min(maxDuration, initial.duration + trimDelta)
                               );
                               if (Math.abs(nextDuration - initial.duration) < 0.0001) return;
                               if (!d.changed) {
@@ -710,10 +721,9 @@ export function EditorScreen(props: {
                                 sourceIn + nextDuration * speed,
                                 initial.sourceDuration ?? Number.POSITIVE_INFINITY
                               );
-                              const clipPatch = {
+                              const clipPatch: Partial<Clip> = {
                                 duration: nextDuration,
-                                sourceIn,
-                                sourceOut: nextSourceOut,
+                                ...(hasSourceBounds ? { sourceIn, sourceOut: nextSourceOut } : {}),
                               };
                               const mainVideoTrack = project.tracks.find((track) => track.type === "video")?.id ?? 2;
                               const timelineDelta = nextDuration - initial.duration;
