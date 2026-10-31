@@ -218,7 +218,7 @@ export function renderCompositeFrame(
         if (Math.abs(audio.currentTime - sourceTime) > 0.5 && !audio.seeking) {
           try { audio.currentTime = sourceTime; } catch { /* wait for metadata */ }
         }
-        audio.playbackRate = Math.max(0.25, Math.min(4, clip.speed || 1));
+        audio.playbackRate = Math.max(0.1, Math.min(3, clip.speed || 1));
         configurePreviewAudio(
           audio,
           (clip.volume ?? 1) * (track?.volume ?? 1),
@@ -324,7 +324,7 @@ export function renderCompositeFrame(
             if (drift > 0.45 && !video.seeking) {
               try { video.currentTime = sourceTime; } catch { /* wait for metadata */ }
             }
-            video.playbackRate = Math.max(0.25, Math.min(4, clip.speed || 1));
+            video.playbackRate = Math.max(0.1, Math.min(3, clip.speed || 1));
             configurePreviewAudio(video, (clip.volume ?? 1) * (track?.volume ?? 1), 0);
             if (video.paused && !video.ended) {
               void video.play().catch(() => undefined);
