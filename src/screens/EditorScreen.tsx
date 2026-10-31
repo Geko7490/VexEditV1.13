@@ -58,6 +58,8 @@ export function EditorScreen(props: {
   const [aspectOpen, setAspectOpen] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [activeExportJob, setActiveExportJob] = useState<RenderJob | null>(null);
+  const [savingExport, setSavingExport] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
   const [resolvedMedia, setResolvedMedia] = useState<Record<string, string>>({});
   const [previewFrameVersion, setPreviewFrameVersion] = useState(0);
 
@@ -303,8 +305,16 @@ export function EditorScreen(props: {
     setActiveExportJob(newJob);
 
     try {
+      const exportProject: Project = {
+        ...project,
+        clips: await Promise.all(project.clips.map(async (clip) => ({
+          ...clip,
+          src: await resolveMediaSource(clip.src),
+          thumb: await resolveMediaSource(clip.thumb),
+        }))),
+      };
       const { downloadUrl, fileName } = await exportProjectToVideoFile(
-        project,
+        exportProject,
         settings.export,
         (progress, frame, totalFrames, etaSec) => {
           setActiveExportJob((prev) =>
@@ -348,6 +358,50 @@ export function EditorScreen(props: {
             : null
         );
       }
+    }
+  };
+
+  const saveExportToDevice = async () => {
+    if (!activeExportJob?.downloadBlobUrl || savingExport) return;
+    const fileName = activeExportJob.outputPath || "VexEdit_Export.webm";
+    const bridge = (window as any).VexEditAndroid;
+    if (!bridge?.isAvailable?.()) {
+      const anchor = document.createElement("a");
+      anchor.href = activeExportJob.downloadBlobUrl;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      return;
+    }
+
+    let token = "";
+    setSavingExport(true);
+    setSaveMessage("Preparing video for device storage…");
+    try {
+      const response = await fetch(activeExportJob.downloadBlobUrl);
+      if (!response.ok) throw new Error("Could not read the rendered video.");
+      const blob = await response.blob();
+      token = bridge.beginSave(fileName, blob.type || "video/webm", blob.size);
+      if (!token) throw new Error("Android could not start saving the video.");
+
+      const chunkSize = 256 * 1024;
+      for (let offset = 0; offset < blob.size; offset += chunkSize) {
+        const bytes = new Uint8Array(await blob.slice(offset, offset + chunkSize).arrayBuffer());
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        const accepted = bridge.appendSaveChunk(token, btoa(binary));
+        if (!accepted) throw new Error("Android could not write a video chunk.");
+        setSaveMessage(`Saving video… ${Math.min(100, Math.round(((offset + bytes.length) / blob.size) * 100))}%`);
+      }
+      if (!bridge.finishSave(token)) throw new Error("Android could not finish saving the video.");
+      token = "";
+      setSaveMessage("Saving to Movies/VexEdit. Android will confirm when it is complete.");
+    } catch (error) {
+      if (token) bridge.cancelSave(token);
+      setSaveMessage(error instanceof Error ? error.message : "Could not save the video.");
+    } finally {
+      setSavingExport(false);
     }
   };
 
@@ -1047,6 +1101,9 @@ export function EditorScreen(props: {
               </span>
             </div>
             <Progress value={activeExportJob.progress} />
+            {activeExportJob.status === "FAILED" && activeExportJob.error && (
+              <p className="mt-2 text-xs text-rose-300">{activeExportJob.error}</p>
+            )}
             <div className="mt-3 flex gap-2">
               {activeExportJob.status === "RENDERING" && (
                 <Ghost
@@ -1059,13 +1116,19 @@ export function EditorScreen(props: {
                 </Ghost>
               )}
               {activeExportJob.status === "COMPLETED" && activeExportJob.downloadBlobUrl && (
-                <a
-                  href={activeExportJob.downloadBlobUrl}
-                  download={activeExportJob.outputPath || "VexEdit_Video.mp4"}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white shadow-lg transition active:scale-95"
-                >
-                  <Ic.IcCheck size={18} /> Download {activeExportJob.outputPath}
-                </a>
+                <div className="w-full space-y-2">
+                  <Primary className="w-full !bg-emerald-600" disabled={savingExport} onClick={saveExportToDevice}>
+                    <Ic.IcCheck size={18} /> {savingExport ? "Saving…" : "Save to device"}
+                  </Primary>
+                  {saveMessage && <p className="text-center text-[11px] text-zinc-400">{saveMessage}</p>}
+                  <a
+                    href={activeExportJob.downloadBlobUrl}
+                    download={activeExportJob.outputPath || "VexEdit_Export.webm"}
+                    className="inline-flex w-full items-center justify-center rounded-xl bg-white/8 px-3 py-2 text-xs text-zinc-300"
+                  >
+                    Download file
+                  </a>
+                </div>
               )}
             </div>
           </div>
