@@ -225,6 +225,7 @@ export function EditorScreen(props: {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
 
+    const nextStartByTrack = new Map<number, number>();
     for (const file of files) {
       const isAudio = file.type.startsWith("audio/");
       const isVideo = file.type.startsWith("video/");
@@ -263,10 +264,12 @@ export function EditorScreen(props: {
       }
 
       const clipType: Clip["type"] = isAudio ? "audio" : isImage ? "image" : "video";
-      const trackId = isAudio ? 3 : 1;
-      const end = project.clips
-        .filter((c) => c.track === trackId)
-        .reduce((a, c) => Math.max(a, c.start + c.duration), tNow);
+      const trackId = isAudio ? 3 : 2;
+      const existingEnd = project.clips
+        .filter((clip) => clip.track === trackId)
+        .reduce((latest, clip) => Math.max(latest, clip.start + clip.duration), tNow);
+      const end = Math.max(existingEnd, nextStartByTrack.get(trackId) ?? tNow);
+      nextStartByTrack.set(trackId, end + mediaDuration);
 
       props.addClip(project.id, {
         track: trackId,
