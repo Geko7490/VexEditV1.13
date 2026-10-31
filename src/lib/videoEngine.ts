@@ -97,6 +97,15 @@ export function renderCompositeFrame(
     .filter((c) => timeSec >= c.start && timeSec < c.start + c.duration)
     .sort((a, b) => a.track - b.track);
 
+  const activeVideoUrls = new Set(
+    activeClips
+      .filter((clip) => clip.type === "video" && clip.src)
+      .map((clip) => clip.src as string)
+  );
+  for (const [url, cachedVideo] of videoCache) {
+    if (!activeVideoUrls.has(url) && !cachedVideo.paused) cachedVideo.pause();
+  }
+
   // Render tracks
   for (const clip of activeClips) {
     if (clip.type === "audio") continue;
@@ -158,7 +167,11 @@ export function renderCompositeFrame(
     } else {
       // Draw Image / Video Clip
       const imgUrl = clip.src || clip.thumb || "/images/preview-car.jpg";
-      const isVideo = clip.type === "video";
+      const isVideo = clip.type === "video" && (
+        clip.sourceMimeType?.startsWith("video/") === true ||
+        imgUrl.startsWith("blob:") ||
+        /\\.(mp4|m4v|mov|webm|mkv|3gp)(?:$|[?#])/i.test(imgUrl)
+      );
       const video = isVideo ? getCachedVideo(imgUrl) : null;
       const img = isVideo ? null : getCachedImage(imgUrl);
 
@@ -171,6 +184,7 @@ export function renderCompositeFrame(
             if (drift > 0.45 && !video.seeking) {
               try { video.currentTime = sourceTime; } catch { /* wait for metadata */ }
             }
+            video.playbackRate = Math.max(0.25, Math.min(4, clip.speed || 1));
             video.volume = Math.max(0, Math.min(1, clip.volume ?? 1));
             if (video.paused && !video.ended) {
               void video.play().catch(() => undefined);
