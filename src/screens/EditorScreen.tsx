@@ -751,7 +751,16 @@ export function EditorScreen(props: {
                 value={sel.speed * 100}
                 min={10}
                 max={300}
-                onChange={(v: number) => props.updateClip(project.id, sel.id, { speed: v / 100 })}
+                onChange={(v: number) => {
+                  const nextSpeed = v / 100;
+                  const sourceIn = sel.sourceIn ?? 0;
+                  const sourceOut = sel.sourceOut ?? sel.sourceDuration ?? sourceIn + sel.duration * (sel.speed || 1);
+                  const sourceLength = Math.max(1 / Math.max(1, project.fps), sourceOut - sourceIn);
+                  props.updateClip(project.id, sel.id, {
+                    speed: nextSpeed,
+                    duration: sourceLength / nextSpeed,
+                  });
+                }}
               />
               <div className="mt-2 flex gap-2">
                 <Ghost onClick={() => props.updateClip(project.id, sel.id, { reversed: !sel.reversed })}>
@@ -1219,6 +1228,7 @@ function ClipView({
         left: clip.start * px,
         width: Math.max(28, clip.duration * px),
         height,
+        touchAction: "none",
         background: clip.type === "audio" ? "#1b2430" : clip.type === "text" ? "#372c14" : "#1a1a22",
       }}
     >
