@@ -137,8 +137,9 @@ export function createAudioEffectNodes(
         feedback.connect(delay);
         delay.connect(wet);
         wet.connect(output);
+        (input as any).__outputNode = output;
         (input as any).__ownedNodes = [output, dry, wet, delay, feedback];
-        nodes.push(input, output);
+        nodes.push(input);
         break;
       }
       case "afx.reverb": {
@@ -166,8 +167,9 @@ export function createAudioEffectNodes(
         input.connect(convolver);
         convolver.connect(wet);
         wet.connect(output);
+        (input as any).__outputNode = output;
         (input as any).__ownedNodes = [output, dry, wet, convolver];
-        nodes.push(input, output);
+        nodes.push(input);
         break;
       }
     }
@@ -202,7 +204,7 @@ function ensureMediaAudioNodes(media: HTMLMediaElement, effects: AudioEffectInst
     let previous: AudioNode = nodes.gain;
     for (const node of nextNodes) {
       previous.connect(node);
-      previous = node;
+      previous = (node as any).__outputNode || node;
     }
     previous.connect(nodes.panner);
     nodes.effectNodes = nextNodes;
