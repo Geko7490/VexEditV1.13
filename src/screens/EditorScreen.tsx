@@ -96,8 +96,9 @@ export function EditorScreen(props: {
     renderCompositeFrame(ctx, w, h, project, tNow, {
       selectedClipId: selected,
       previewQuality: settings.preview.effectQuality,
+      playing,
     });
-  }, [project, tNow, selected, settings.preview.effectQuality]);
+  }, [project, tNow, selected, settings.preview.effectQuality, playing]);
 
   // Real Playhead Loop
   useEffect(() => {
@@ -130,15 +131,33 @@ export function EditorScreen(props: {
     setTNow(Math.max(0, Math.min(duration, x / px)));
   };
 
-  const handleFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  const handleFileUpload = async (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
 
-    Array.from(files).forEach((file) => {
+    for (const file of files) {
       const isAudio = file.type.startsWith("audio/");
       const isVideo = file.type.startsWith("video/");
       const isImage = file.type.startsWith("image/");
+      if (!isAudio && !isVideo && !isImage) continue;
+
       const blobUrl = URL.createObjectURL(file);
+      let mediaDuration = 5;
+
+      // Read the real source duration instead of assigning every imported
+      // video/audio file an arbitrary five- or twelve-second placeholder.
+      if (isVideo || isAudio) {
+        mediaDuration = await new Promise<number>((resolve) => {
+          const media = document.createElement(isAudio ? "audio" : "video");
+          media.preload = "metadata";
+          media.onloadedmetadata = () => {
+            const duration = media.duration;
+            resolve(Number.isFinite(duration) && duration > 0 ? duration : 5);
+          };
+          media.onerror = () => resolve(5);
+          media.src = blobUrl;
+        });
+      }
 
       const clipType: Clip["type"] = isAudio ? "audio" : isImage ? "image" : "video";
       const trackId = isAudio ? 3 : 2;
@@ -149,9 +168,12 @@ export function EditorScreen(props: {
       props.addClip(project.id, {
         track: trackId,
         type: clipType,
-        name: file.name.slice(0, 18),
+        name: file.name.slice(0, 32),
         start: end,
-        duration: isAudio ? 12 : 5,
+        duration: mediaDuration,
+        sourceDuration: isVideo || isAudio ? mediaDuration : undefined,
+        sourceIn: 0,
+        sourceOut: isVideo || isAudio ? mediaDuration : undefined,
         color: isAudio ? "#3ee0c8" : "#8b67f7",
         opacity: 1,
         speed: 1,
@@ -159,7 +181,7 @@ export function EditorScreen(props: {
         frozen: false,
         effects: [],
         src: blobUrl,
-        thumb: isImage || isVideo ? blobUrl : undefined,
+        thumb: isImage ? blobUrl : undefined,
         volume: 1,
         x: 0,
         y: 0,
@@ -167,9 +189,10 @@ export function EditorScreen(props: {
         rotation: 0,
         crop: 0,
       });
-    });
+    }
 
     setAddOpen(false);
+    e.target.value = "";
   };
 
   const handleAddText = () => {
