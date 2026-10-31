@@ -412,7 +412,7 @@ export default function App() {
           {overlay === "editor" && activeProject && (
             <EditorScreen
               tr={tr} project={activeProject} settings={settings} saved={savedFlag} renderJobs={renderJobs}
-              onBack={() => setOverlay(null)} onUndo={undo} onRedo={redo}
+              onBack={() => setOverlay(null)} onUndo={undo} onRedo={redo} pushHistory={pushHistory}
               updateProject={updateProject} addClip={addClip} deleteClip={deleteClip}
               duplicateClip={duplicateClip} splitClip={splitClip} updateClip={updateClip}
               startRender={startRender} pauseRender={pauseRender} resumeRender={resumeRender}
