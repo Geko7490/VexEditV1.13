@@ -13,6 +13,7 @@ import type {
 import { formatClock, uid } from "../lib/store";
 import { MEDIA_LIBRARY, waveBars } from "../lib/demo";
 import { renderCompositeFrame, exportProjectToVideoFile } from "../lib/videoEngine";
+import { resolveMediaSource, saveMediaFile } from "../lib/mediaStore";
 import * as Ic from "../components/icons";
 import { Sheet, Slider, Select, Field, Primary, Ghost, Progress, Input } from "../components/ui";
 
@@ -56,6 +57,7 @@ export function EditorScreen(props: {
   const [aspectOpen, setAspectOpen] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [activeExportJob, setActiveExportJob] = useState<RenderJob | null>(null);
+  const [resolvedMedia, setResolvedMedia] = useState<Record<string, string>>({});
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
@@ -71,6 +73,27 @@ export function EditorScreen(props: {
   useEffect(() => {
     setSelected(project.clips.find((c) => c.track === 2)?.id ?? null);
   }, [project.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const resolveAll = async () => {
+      const entries = await Promise.all(project.clips.map(async (clip) => {
+        const reference = clip.src || clip.thumb;
+        try {
+          const resolved = await resolveMediaSource(reference);
+          return [clip.id, resolved || ""] as const;
+        } catch (error) {
+          console.warn("Could not restore imported media", clip.name, error);
+          return [clip.id, ""] as const;
+        }
+      }));
+      if (!cancelled) {
+        setResolvedMedia((previous) => ({ ...previous, ...Object.fromEntries(entries) }));
+      }
+    };
+    void resolveAll();
+    return () => { cancelled = true; };
+  }, [project.id, project.clips]);
 
   const duration = Math.max(15, ...project.clips.map((c) => c.start + c.duration), 1);
   const px = 38 * zoom;
@@ -99,12 +122,20 @@ export function EditorScreen(props: {
       canvas.height = h;
     }
 
-    renderCompositeFrame(ctx, w, h, project, tNow, {
+    const previewProject: Project = {
+      ...project,
+      clips: project.clips.map((clip) => ({
+        ...clip,
+        src: resolvedMedia[clip.id] || clip.src,
+        thumb: resolvedMedia[clip.id] || clip.thumb,
+      })),
+    };
+    renderCompositeFrame(ctx, w, h, previewProject, tNow, {
       selectedClipId: selected,
       previewQuality: settings.preview.effectQuality,
       playing,
     });
-  }, [project, tNow, selected, settings.preview.effectQuality, playing]);
+  }, [project, tNow, selected, settings.preview.effectQuality, playing, resolvedMedia]);
 
   // Real Playhead Loop
   useEffect(() => {
@@ -147,22 +178,29 @@ export function EditorScreen(props: {
       const isImage = file.type.startsWith("image/");
       if (!isAudio && !isVideo && !isImage) continue;
 
-      const blobUrl = URL.createObjectURL(file);
+      // Persist the original bytes in IndexedDB. The project stores a stable
+      // media key rather than a temporary blob: URL that dies when the app closes.
+      const persistentSource = await saveMediaFile(file);
+      const metadataUrl = URL.createObjectURL(file);
       let mediaDuration = 5;
 
-      // Read the real source duration instead of assigning every imported
-      // video/audio file an arbitrary five- or twelve-second placeholder.
       if (isVideo || isAudio) {
         mediaDuration = await new Promise<number>((resolve) => {
           const media = document.createElement(isAudio ? "audio" : "video");
           media.preload = "metadata";
           media.onloadedmetadata = () => {
             const duration = media.duration;
+            URL.revokeObjectURL(metadataUrl);
             resolve(Number.isFinite(duration) && duration > 0 ? duration : 5);
           };
-          media.onerror = () => resolve(5);
-          media.src = blobUrl;
+          media.onerror = () => {
+            URL.revokeObjectURL(metadataUrl);
+            resolve(5);
+          };
+          media.src = metadataUrl;
         });
+      } else {
+        URL.revokeObjectURL(metadataUrl);
       }
 
       const clipType: Clip["type"] = isAudio ? "audio" : isImage ? "image" : "video";
@@ -178,6 +216,7 @@ export function EditorScreen(props: {
         start: end,
         duration: mediaDuration,
         sourceDuration: isVideo || isAudio ? mediaDuration : undefined,
+        sourceMimeType: file.type,
         sourceIn: 0,
         sourceOut: isVideo || isAudio ? mediaDuration : undefined,
         color: isAudio ? "#3ee0c8" : "#8b67f7",
@@ -186,8 +225,8 @@ export function EditorScreen(props: {
         reversed: false,
         frozen: false,
         effects: [],
-        src: blobUrl,
-        thumb: isImage ? blobUrl : undefined,
+        src: persistentSource,
+        thumb: isImage ? persistentSource : undefined,
         volume: 1,
         x: 0,
         y: 0,
@@ -522,8 +561,9 @@ export function EditorScreen(props: {
                                 sourceOut,
                               });
                             } else {
+                              const sourceEndLimit = initial.sourceDuration ?? sourceOut;
                               const maxDuration = initial.sourceDuration != null
-                                ? Math.max(1 / Math.max(1, project.fps), (Math.min(sourceOut, initial.sourceDuration) - sourceIn) / speed)
+                                ? Math.max(1 / Math.max(1, project.fps), (sourceEndLimit - sourceIn) / speed)
                                 : 600;
                               const nextDuration = Math.max(
                                 1 / Math.max(1, project.fps),
@@ -1073,8 +1113,8 @@ function ClipView({
         background: clip.type === "audio" ? "#1b2430" : clip.type === "text" ? "#372c14" : "#1a1a22",
       }}
     >
-      {clip.thumb && clip.type !== "audio" ? (
-        <img src={clip.thumb} alt="" className="h-full w-full object-cover" draggable={false} />
+      {(clip.thumb || clip.src) && clip.type !== "audio" ? (
+        <img src={resolvedMedia[clip.id] || clip.thumb || clip.src} alt="" className="h-full w-full object-cover" draggable={false} />
       ) : clip.type === "audio" ? (
         <div className="flex h-full items-end gap-px px-1 py-1">
           {bars.map((b, i) => (
