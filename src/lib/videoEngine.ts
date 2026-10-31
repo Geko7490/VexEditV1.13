@@ -541,6 +541,47 @@ export function renderCompositeFrame(
         ctx.fillText(status, 0, 0);
       }
 
+      // Lightweight real-time chromatic aberration. Two tinted source
+      // passes create separated color fringes without expensive pixel readback.
+      if (mediaReady && (clip.chromaticAberration ?? 0) > 0) {
+        const amount = Math.max(0, Math.min(100, clip.chromaticAberration ?? 0));
+        const offset = Math.max(1, (width / 720) * amount * 0.035);
+        const originalFilter = ctx.filter;
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        ctx.globalAlpha = Math.min(0.5, amount / 180);
+        ctx.filter = "sepia(1) saturate(8) hue-rotate(300deg)";
+        ctx.drawImage((video || img) as CanvasImageSource, drawX + offset, drawY, drawW, drawH);
+        ctx.filter = "sepia(1) saturate(8) hue-rotate(165deg)";
+        ctx.drawImage((video || img) as CanvasImageSource, drawX - offset, drawY, drawW, drawH);
+        ctx.filter = originalFilter;
+        ctx.restore();
+      }
+
+      // Time-deterministic horizontal displacement bands for a real glitch
+      // effect that stays stable for each rendered frame in both preview/export.
+      if (mediaReady && (clip.glitchIntensity ?? 0) > 0) {
+        const intensity = Math.max(0, Math.min(100, clip.glitchIntensity ?? 0));
+        const speed = Math.max(0.1, Math.min(5, clip.glitchSpeed ?? 1));
+        const bands = 3 + Math.ceil(intensity / 18);
+        const frameSeed = Math.floor(timeSec * speed * 18);
+        const maxOffset = (width * intensity) / 1800;
+        for (let band = 0; band < bands; band++) {
+          const phase = (frameSeed * 1.73 + band * 2.41);
+          const offset = Math.sin(phase) * maxOffset;
+          if (Math.abs(offset) < 0.5) continue;
+          const bandY = drawY + (drawH * band) / bands;
+          const bandHeight = drawH / bands + 1;
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(drawX, bandY, drawW, bandHeight);
+          ctx.clip();
+          ctx.globalAlpha = 0.35 + intensity / 180;
+          ctx.drawImage((video || img) as CanvasImageSource, drawX + offset, drawY, drawW, drawH);
+          ctx.restore();
+        }
+      }
+
       // Vignette effect overlay
       if ((clip.vignette ?? 0) > 0) {
         const feather = Math.max(0, Math.min(100, clip.vignetteFeather ?? 50)) / 100;
