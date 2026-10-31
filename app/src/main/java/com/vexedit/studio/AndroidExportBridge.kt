@@ -74,7 +74,8 @@ class AndroidExportBridge(private val activity: Activity) {
                     throw IllegalStateException("Export size verification failed.")
                 }
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val savedToGallery = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                if (savedToGallery) {
                     val values = ContentValues().apply {
                         put(MediaStore.Video.Media.DISPLAY_NAME, export.fileName)
                         put(MediaStore.Video.Media.MIME_TYPE, export.mimeType)
@@ -109,7 +110,12 @@ class AndroidExportBridge(private val activity: Activity) {
 
                 export.file.delete()
                 activity.runOnUiThread {
-                    Toast.makeText(activity, "Video saved to Movies/VexEdit", Toast.LENGTH_LONG).show()
+                    val message = if (savedToGallery) {
+                        "Video saved to Movies/VexEdit"
+                    } else {
+                        "Video saved to the app Movies/VexEdit folder"
+                    }
+                    Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
                 }
             } catch (error: Exception) {
                 android.util.Log.e("VexEditExport", "Export save failed", error)
