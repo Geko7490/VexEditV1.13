@@ -37,6 +37,41 @@ export function getCachedVideo(url: string): HTMLVideoElement {
 }
 
 const audioCache: Map<string, HTMLAudioElement> = new Map();
+let previewAudioContext: AudioContext | null = null;
+const audioNodeCache = new WeakMap<HTMLAudioElement, {
+  gain: GainNode;
+  panner: StereoPannerNode;
+}>();
+
+function configurePreviewAudio(audio: HTMLAudioElement, volume: number, pan: number) {
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioContextClass) {
+    audio.volume = Math.max(0, Math.min(1, volume));
+    return;
+  }
+  try {
+    previewAudioContext ||= new AudioContextClass();
+    let nodes = audioNodeCache.get(audio);
+    if (!nodes) {
+      const source = previewAudioContext.createMediaElementSource(audio);
+      const gain = previewAudioContext.createGain();
+      const panner = previewAudioContext.createStereoPanner();
+      source.connect(gain);
+      gain.connect(panner);
+      panner.connect(previewAudioContext.destination);
+      nodes = { gain, panner };
+      audioNodeCache.set(audio, nodes);
+    }
+    nodes.gain.gain.value = Math.max(0, Math.min(4, volume));
+    nodes.panner.pan.value = Math.max(-1, Math.min(1, pan));
+    audio.volume = 1;
+    if (previewAudioContext.state === "suspended") {
+      void previewAudioContext.resume().catch(() => undefined);
+    }
+  } catch {
+    audio.volume = Math.max(0, Math.min(1, volume));
+  }
+}
 
 export function getCachedAudio(url: string): HTMLAudioElement {
   const cached = audioCache.get(url);
