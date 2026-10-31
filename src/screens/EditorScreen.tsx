@@ -1400,7 +1400,7 @@ function ClipView({
           ))}
         </div>
       )}
-      {selected && (
+      {selected && !locked && (
         <>
           <div
             data-trim-edge="left"
