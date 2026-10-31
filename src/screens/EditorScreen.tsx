@@ -29,6 +29,7 @@ export function EditorScreen(props: {
   onUndo: () => void;
   onRedo: () => void;
   pushHistory: (id: string, label: string) => void;
+  showToast: (message: string) => void;
   updateProject: (id: string, patch: Partial<Project>) => void;
   addClip: (projectId: string, clip: Omit<Clip, "id">) => void;
   deleteClip: (projectId: string, clipId: string) => void;
@@ -191,7 +192,13 @@ export function EditorScreen(props: {
 
       // Persist the original bytes in IndexedDB. The project stores a stable
       // media key rather than a temporary blob: URL that dies when the app closes.
-      const persistentSource = await saveMediaFile(file);
+      let persistentSource: string;
+      try {
+        persistentSource = await saveMediaFile(file);
+      } catch (error) {
+        props.showToast(error instanceof Error ? error.message : "Could not save imported media.");
+        continue;
+      }
       const metadataUrl = URL.createObjectURL(file);
       let mediaDuration = 5;
 
