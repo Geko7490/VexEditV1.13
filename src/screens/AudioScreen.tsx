@@ -150,7 +150,7 @@ export function AudioScreen({
       const effectNodes = createAudioEffectNodes(offline, selectedClip.audioEffects ?? []);
       for (const effectNode of effectNodes) {
         previousNode.connect(effectNode);
-        previousNode = effectNode;
+        previousNode = (effectNode as any).__outputNode || effectNode;
       }
       previousNode.connect(panner);
       panner.connect(offline.destination);
